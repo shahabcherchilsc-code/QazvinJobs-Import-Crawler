@@ -1,0 +1,61 @@
+name: QazvinJobs Import Crawler 0.3.2 Immediate Send
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: Maximum Qazvin search pages
+        required: false
+        default: '1'
+      max_candidates:
+        description: Maximum job pages to inspect
+        required: false
+        default: '12'
+      max_accept:
+        description: Maximum accepted ads
+        required: false
+        default: '1'
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      QZIH_SITE_URL: ${{ secrets.QZIH_SITE_URL }}
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      QZIH_SEARCH_URL: https://www.e-estekhdam.com/search/%D8%A7%D8%B3%D8%AA%D8%AE%D8%AF%D8%A7%D9%85-%D8%AF%D8%B1-%D9%82%D8%B2%D9%88%DB%8C%D9%86
+      QZIH_MAX_PAGES: ${{ inputs.max_pages || '1' }}
+      QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '12' }}
+      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '1' }}
+      QZIH_RUN_LIMIT_MINUTES: '8'
+
+    steps:
+      - name: Checkout crawler
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install crawler dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify WordPress receiver
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$QZIH_IMPORT_ENDPOINT"
+          test -n "$QZIH_IMPORT_TOKEN"
+          STATUS_URL="${QZIH_IMPORT_ENDPOINT%/batch}/status"
+          curl --fail-with-body --silent --show-error             -H "X-QZIH-Token: $QZIH_IMPORT_TOKEN"             "$STATUS_URL"
+
+      - name: Crawl one Qazvin ad and send immediately
+        run: npm run crawl
