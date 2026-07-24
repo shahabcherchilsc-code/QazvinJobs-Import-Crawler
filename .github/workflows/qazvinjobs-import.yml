@@ -1,0 +1,73 @@
+name: QazvinJobs Import Crawler 0.3.7 Divar Review Queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Sources: both, e-estekhdam, or divar"
+        required: false
+        default: "both"
+      seed_url:
+        description: "Optional direct ad URL for a controlled test"
+        required: false
+        default: ""
+      max_pages:
+        description: "Maximum search pages per source"
+        required: false
+        default: "1"
+      max_candidates:
+        description: "Maximum job pages per source"
+        required: false
+        default: "20"
+      max_accept:
+        description: "Maximum accepted or review-queue ads"
+        required: false
+        default: "4"
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+
+    env:
+      QZIH_SITE_URL: ${{ secrets.QZIH_SITE_URL }}
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      QZIH_SOURCES: ${{ inputs.sources || 'both' }}
+      QZIH_SEED_URLS: ${{ inputs.seed_url || '' }}
+      QZIH_EESTEKHDAM_SEARCH_URL: "https://www.e-estekhdam.com/search/%D8%A7%D8%B3%D8%AA%D8%AE%D8%AF%D8%A7%D9%85-%D8%AF%D8%B1-%D9%82%D8%B2%D9%88%DB%8C%D9%86"
+      QZIH_DIVAR_SEARCH_URL: "https://divar.ir/s/qazvin/jobs"
+      QZIH_MAX_PAGES: ${{ inputs.max_pages || '1' }}
+      QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '20' }}
+      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '4' }}
+      QZIH_RUN_LIMIT_MINUTES: "14"
+
+    steps:
+      - name: Checkout crawler
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install crawler dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify WordPress receiver
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$QZIH_IMPORT_ENDPOINT"
+          test -n "$QZIH_IMPORT_TOKEN"
+          STATUS_URL="${QZIH_IMPORT_ENDPOINT%/batch}/status"
+          curl --fail-with-body --silent --show-error             -H "X-QZIH-Token: $QZIH_IMPORT_TOKEN"             "$STATUS_URL"
+
+      - name: Crawl Qazvin jobs and send Divar chat-only ads to manager review
+        run: npm run crawl
