@@ -1,0 +1,29 @@
+name: QazvinJobs Divar Login 0.3.9
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  login:
+    name: Request OTP and save authenticated Divar session
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    concurrency:
+      group: qazvinjobs-divar-login
+      cancel-in-progress: true
+    env:
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Request Divar OTP and wait for WordPress input
+        run: npm run divar-auth
