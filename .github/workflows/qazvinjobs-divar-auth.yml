@@ -1,0 +1,52 @@
+name: QazvinJobs Divar Login 0.3.10
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  login:
+    name: Request OTP and save authenticated Divar session
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    concurrency:
+      group: qazvinjobs-divar-login
+      cancel-in-progress: true
+
+    env:
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
+
+    steps:
+      - name: Checkout crawler
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Request Divar OTP and wait for WordPress input
+        run: npm run divar-auth
+
+      - name: Upload Divar login diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: divar-login-diagnostics-${{ github.run_number }}
+          path: |
+            divar-auth-debug.png
+            divar-auth-debug.html
+            divar-auth-debug.json
+          if-no-files-found: ignore
+          retention-days: 7
