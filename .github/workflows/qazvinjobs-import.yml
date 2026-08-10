@@ -1,0 +1,139 @@
+name: QazvinJobs Import Crawler 0.3.34 TDZ Initialization Fix + Multi-Position Mapping
+
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Sources: both, e-estekhdam, or divar"
+        required: false
+        default: "both"
+        type: choice
+        options: [both, e-estekhdam, divar]
+      seed_url:
+        description: "Optional manual seed URL; armed WordPress controlled-test URL takes priority"
+        required: false
+        default: ""
+        type: string
+      max_pages:
+        description: "Maximum search pages per source"
+        required: false
+        default: "5"
+        type: string
+      max_candidates:
+        description: "Maximum job pages per source"
+        required: false
+        default: "80"
+        type: string
+      max_accept:
+        description: "Maximum valid ads to create as drafts"
+        required: false
+        default: "5"
+        type: string
+      max_review:
+        description: "Legacy compatibility value"
+        required: false
+        default: "5"
+        type: string
+  schedule:
+    - cron: "15 9 * * *"
+      timezone: "Asia/Tehran"
+    - cron: "15 10 * * *"
+      timezone: "Asia/Tehran"
+
+permissions:
+  contents: read
+
+jobs:
+  e_estekhdam:
+    name: Daily E-Estekhdam Qazvin Import
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '15 9 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.sources == 'both' || inputs.sources == 'e-estekhdam'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency: { group: qazvinjobs-e-estekhdam-import, cancel-in-progress: false }
+    env:
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      QZIH_SOURCES: "e-estekhdam"
+      QZIH_SEED_URLS: ${{ inputs.seed_url || '' }}
+      QZIH_MAX_PAGES: ${{ inputs.max_pages || '5' }}
+      QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '80' }}
+      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '5' }}
+      QZIH_MAX_REVIEW: ${{ inputs.max_review || '5' }}
+      QZIH_RUN_LIMIT_MINUTES: "20"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Verify WordPress receiver and load controlled-test state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          STATUS_URL="${QZIH_IMPORT_ENDPOINT%/batch}/status"
+          STATUS_JSON="$(curl --fail-with-body --silent --show-error --retry 2 --retry-delay 2 --max-time 30 -H "X-QZIH-Token: $QZIH_IMPORT_TOKEN" "$STATUS_URL")"
+          printf '%s\n' "$STATUS_JSON"
+          CONTROLLED_URL="$(printf '%s' "$STATUS_JSON" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);process.stdout.write(j?.controlled_test?.active ? String(j.controlled_test.url||'') : '')})")"
+          CONTROLLED_SOURCE_ID="$(printf '%s' "$STATUS_JSON" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);process.stdout.write(j?.controlled_test?.active ? String(j.controlled_test.source_id||'') : '')})")"
+          if [ -n "$CONTROLLED_URL" ]; then
+            echo "QZIH_CONTROLLED_TEST_ACTIVE=1" >> "$GITHUB_ENV"
+            echo "QZIH_CONTROLLED_TEST_URL=$CONTROLLED_URL" >> "$GITHUB_ENV"
+            echo "QZIH_CONTROLLED_TEST_SOURCE_ID=$CONTROLLED_SOURCE_ID" >> "$GITHUB_ENV"
+            echo "Controlled test preflight: ACTIVE source_id=$CONTROLLED_SOURCE_ID url=$CONTROLLED_URL"
+          else
+            echo "QZIH_CONTROLLED_TEST_ACTIVE=0" >> "$GITHUB_ENV"
+            echo "Controlled test preflight: inactive"
+          fi
+      - run: npm run crawl
+      - name: Upload E-Estekhdam controlled diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e-estekhdam-controlled-diagnostics-${{ github.run_number }}
+          path: e-estekhdam-controlled-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  divar:
+    name: Daily Authenticated Divar Qazvin Jobs
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '15 10 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.sources == 'both' || inputs.sources == 'divar'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    concurrency: { group: qazvinjobs-divar-import, cancel-in-progress: false }
+    env:
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
+      QZIH_SOURCES: "divar"
+      QZIH_SEED_URLS: ${{ inputs.seed_url || '' }}
+      QZIH_MAX_PAGES: ${{ inputs.max_pages || '2' }}
+      QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '25' }}
+      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '5' }}
+      QZIH_MAX_REVIEW: ${{ inputs.max_review || '5' }}
+      QZIH_RUN_LIMIT_MINUTES: "17"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Verify WordPress receiver
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          STATUS_URL="${QZIH_IMPORT_ENDPOINT%/batch}/status"
+          curl --fail-with-body --silent --show-error -H "X-QZIH-Token: $QZIH_IMPORT_TOKEN" "$STATUS_URL"
+      - run: npm run crawl
+      - name: Upload Divar contact diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: divar-contact-diagnostics-${{ github.run_number }}
+          path: divar-contact-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
