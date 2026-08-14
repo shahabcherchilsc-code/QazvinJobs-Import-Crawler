@@ -1,4 +1,4 @@
-name: QazvinJobs Import Crawler 0.3.45 Final Divar Channels
+name: QazvinJobs Import Crawler 0.3.46 Final Divar Contact Channels
 
 on:
   workflow_dispatch:
