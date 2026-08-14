@@ -1,4 +1,4 @@
-name: QazvinJobs Import Crawler 0.3.47 Final Divar Stable Contact Policy
+name: QazvinJobs Import Crawler 0.3.48 Final + Recent Window
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ on:
         default: "80"
         type: string
       max_accept:
-        description: "Maximum valid ads to create as drafts"
+        description: "Maximum valid ads to create as drafts per source/job (max 25)"
         required: false
         default: "5"
         type: string
@@ -33,6 +33,11 @@ on:
         description: "Legacy compatibility value"
         required: false
         default: "5"
+        type: string
+      max_age_days:
+        description: "Optional freshness window in days; 0 keeps current behavior"
+        required: false
+        default: "0"
         type: string
   schedule:
     - cron: "15 9 * * *"
@@ -61,6 +66,7 @@ jobs:
       QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '80' }}
       QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '5' }}
       QZIH_MAX_REVIEW: ${{ inputs.max_review || '5' }}
+      QZIH_MAX_AGE_DAYS: ${{ inputs.max_age_days || '0' }}
       QZIH_RUN_LIMIT_MINUTES: "20"
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +124,7 @@ jobs:
       QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '25' }}
       QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '5' }}
       QZIH_MAX_REVIEW: ${{ inputs.max_review || '5' }}
+      QZIH_MAX_AGE_DAYS: ${{ inputs.max_age_days || '0' }}
       QZIH_RUN_LIMIT_MINUTES: "17"
     steps:
       - uses: actions/checkout@v4
