@@ -1,0 +1,51 @@
+name: QazvinJobs Divar Login 0.3.43
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  divar_login:
+    name: Refresh authenticated Divar session
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: qazvinjobs-divar-session
+      cancel-in-progress: false
+    env:
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Static source validation
+        run: |
+          node --check crawler.mjs
+          node --check divar-auth.mjs
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Verify WordPress auth receiver
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          STATUS_URL="${QZIH_IMPORT_ENDPOINT%/batch}/status"
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 2 --max-time 30 \
+            -H "X-QZIH-Token: $QZIH_IMPORT_TOKEN" "$STATUS_URL"
+          printf '\n'
+      - name: Start Divar OTP login
+        run: npm run divar-auth
+      - name: Upload safe Divar login diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: divar-login-diagnostics-${{ github.run_number }}
+          path: |
+            divar-auth-debug.png
+            divar-auth-debug.json
+          if-no-files-found: ignore
+          retention-days: 3
