@@ -1,4 +1,4 @@
-name: QazvinJobs Import Crawler 0.4.1
+name: QazvinJobs Import Crawler 0.4.3
 
 on:
   workflow_dispatch:
@@ -104,6 +104,11 @@ jobs:
         run: |
           set -Eeuo pipefail
 
+          echo "========================================"
+          echo "QazvinJobs Import Crawler"
+          echo "Expected ZIP: $SOURCE_ZIP"
+          echo "========================================"
+
           if [ ! -f "$SOURCE_ZIP" ]; then
             echo "ERROR: $SOURCE_ZIP not found in repository root."
             echo ""
@@ -168,6 +173,8 @@ jobs:
 
           node --check crawler.mjs
           node --check divar-auth.mjs
+
+          echo "JavaScript syntax check passed."
 
       - name: Install dependencies
         working-directory: qazvinjobs-import-crawler
@@ -277,9 +284,68 @@ jobs:
         working-directory: qazvinjobs-import-crawler
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -o pipefail
 
-          npm run crawl
+          echo "========================================"
+          echo "QazvinJobs crawler"
+          echo "Version: 0.4.3"
+          echo "Source: e-estekhdam"
+          echo "ZIP: $SOURCE_ZIP"
+          echo "Seed URL: ${QZIH_SEED_URLS:-none}"
+          echo "Max pages: ${QZIH_MAX_PAGES}"
+          echo "Max candidates: ${QZIH_MAX_CANDIDATES}"
+          echo "Max accepted: ${QZIH_MAX_ACCEPT}"
+          echo "Max age days: ${QZIH_MAX_AGE_DAYS}"
+          echo "========================================"
+
+          npm run crawl 2>&1 | tee crawler.log
+
+          CRAWLER_EXIT=${PIPESTATUS[0]}
+
+          echo ""
+          echo "Crawler exit code: $CRAWLER_EXIT"
+
+          if [ "$CRAWLER_EXIT" -ne 0 ]; then
+            echo "Crawler failed with exit code $CRAWLER_EXIT"
+            exit "$CRAWLER_EXIT"
+          fi
+
+      - name: Create E-Estekhdam summary
+        if: always()
+        working-directory: qazvinjobs-import-crawler
+        shell: bash
+        run: |
+          {
+            echo "# QazvinJobs Import Report"
+            echo ""
+            echo "**Version:** 0.4.3"
+            echo ""
+            echo "**Source:** e-estekhdam"
+            echo ""
+            echo "**Crawler ZIP:** $SOURCE_ZIP"
+            echo ""
+            echo "**Seed URL:** ${QZIH_SEED_URLS:-none}"
+            echo ""
+            echo "**Max pages:** ${QZIH_MAX_PAGES}"
+            echo ""
+            echo "**Max candidates:** ${QZIH_MAX_CANDIDATES}"
+            echo ""
+            echo "**Max accepted:** ${QZIH_MAX_ACCEPT}"
+            echo ""
+            echo "**Max age:** ${QZIH_MAX_AGE_DAYS} days"
+            echo ""
+            echo "## Last crawler output"
+            echo ""
+            echo '```text'
+
+            if [ -f crawler.log ]; then
+              tail -n 160 crawler.log
+            else
+              echo "crawler.log was not created"
+            fi
+
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload E-Estekhdam diagnostics
         if: always()
@@ -287,9 +353,9 @@ jobs:
         with:
           name: e-estekhdam-diagnostics-${{ github.run_number }}
           path: |
+            qazvinjobs-import-crawler/crawler.log
             qazvinjobs-import-crawler/e-estekhdam-controlled-diagnostics/
             qazvinjobs-import-crawler/diagnostics/
-            qazvinjobs-import-crawler/*.log
             qazvinjobs-import-crawler/*.json
           if-no-files-found: ignore
           retention-days: 7
@@ -340,6 +406,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+
+          echo "========================================"
+          echo "QazvinJobs Import Crawler"
+          echo "Expected ZIP: $SOURCE_ZIP"
+          echo "========================================"
 
           if [ ! -f "$SOURCE_ZIP" ]; then
             echo "ERROR: $SOURCE_ZIP not found in repository root."
@@ -406,6 +477,8 @@ jobs:
           node --check crawler.mjs
           node --check divar-auth.mjs
 
+          echo "JavaScript syntax check passed."
+
       - name: Install dependencies
         working-directory: qazvinjobs-import-crawler
         shell: bash
@@ -465,9 +538,68 @@ jobs:
         working-directory: qazvinjobs-import-crawler
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -o pipefail
 
-          npm run crawl
+          echo "========================================"
+          echo "QazvinJobs crawler"
+          echo "Version: 0.4.3"
+          echo "Source: divar"
+          echo "ZIP: $SOURCE_ZIP"
+          echo "Seed URL: ${QZIH_SEED_URLS:-none}"
+          echo "Max pages: ${QZIH_MAX_PAGES}"
+          echo "Max candidates: ${QZIH_MAX_CANDIDATES}"
+          echo "Max accepted: ${QZIH_MAX_ACCEPT}"
+          echo "Max age days: ${QZIH_MAX_AGE_DAYS}"
+          echo "========================================"
+
+          npm run crawl 2>&1 | tee crawler.log
+
+          CRAWLER_EXIT=${PIPESTATUS[0]}
+
+          echo ""
+          echo "Crawler exit code: $CRAWLER_EXIT"
+
+          if [ "$CRAWLER_EXIT" -ne 0 ]; then
+            echo "Crawler failed with exit code $CRAWLER_EXIT"
+            exit "$CRAWLER_EXIT"
+          fi
+
+      - name: Create Divar summary
+        if: always()
+        working-directory: qazvinjobs-import-crawler
+        shell: bash
+        run: |
+          {
+            echo "# QazvinJobs Import Report"
+            echo ""
+            echo "**Version:** 0.4.3"
+            echo ""
+            echo "**Source:** divar"
+            echo ""
+            echo "**Crawler ZIP:** $SOURCE_ZIP"
+            echo ""
+            echo "**Seed URL:** ${QZIH_SEED_URLS:-none}"
+            echo ""
+            echo "**Max pages:** ${QZIH_MAX_PAGES}"
+            echo ""
+            echo "**Max candidates:** ${QZIH_MAX_CANDIDATES}"
+            echo ""
+            echo "**Max accepted:** ${QZIH_MAX_ACCEPT}"
+            echo ""
+            echo "**Max age:** ${QZIH_MAX_AGE_DAYS} days"
+            echo ""
+            echo "## Last crawler output"
+            echo ""
+            echo '```text'
+
+            if [ -f crawler.log ]; then
+              tail -n 160 crawler.log
+            else
+              echo "crawler.log was not created"
+            fi
+
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Divar diagnostics
         if: always()
@@ -475,9 +607,9 @@ jobs:
         with:
           name: divar-diagnostics-${{ github.run_number }}
           path: |
+            qazvinjobs-import-crawler/crawler.log
             qazvinjobs-import-crawler/divar-contact-diagnostics/
             qazvinjobs-import-crawler/diagnostics/
-            qazvinjobs-import-crawler/*.log
             qazvinjobs-import-crawler/*.json
           if-no-files-found: ignore
           retention-days: 7
