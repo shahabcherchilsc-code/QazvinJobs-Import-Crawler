@@ -53,7 +53,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_ZIP: QazvinJobs-Import-Crawler-0.5.2-JOB-ONLY-FINAL.zip
+  SOURCE_ZIP: QazvinJobs-Import-Crawler-0.6.0-SOURCE-FIDELITY-FINAL.zip
   PROJECT_DIR: qazvinjobs-import-crawler
 
 jobs:
