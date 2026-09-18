@@ -54,8 +54,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_ZIP: QazvinJobs-Import-Crawler-0.5.2-FINAL-HOTFIX.zip
-  PROJECT_DIR: qazvinjobs-import-crawler
+  SOURCE_ZIP: QazvinJobs-Import-Crawler-0.5.2-JOB-ONLY-FINAL.zip
 
 jobs:
 
