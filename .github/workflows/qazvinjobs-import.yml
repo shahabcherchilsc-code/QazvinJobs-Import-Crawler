@@ -1,545 +1,139 @@
-name: QazvinJobs Import Crawler 0.5.2
+name: QazvinJobs Import Crawler
 
 on:
   workflow_dispatch:
     inputs:
-      sources:
+      source:
         description: "Source to crawl"
         required: true
         default: "both"
-        type: choice
-        options:
-          - both
-          - e-estekhdam
-          - divar
 
       seed_url:
         description: "Optional seed URL"
         required: false
         default: ""
-        type: string
 
       max_pages:
         description: "Maximum search pages"
-        required: false
+        required: true
         default: "20"
-        type: string
 
       max_candidates:
         description: "Maximum candidates"
-        required: false
+        required: true
         default: "500"
-        type: string
 
       max_accept:
         description: "Maximum accepted drafts"
-        required: false
+        required: true
         default: "50"
-        type: string
 
       max_age_days:
-        description: "Maximum ad age in days"
-        required: false
+        description: "Maximum age in days"
+        required: true
         default: "2"
-        type: string
 
-  schedule:
-    # 03:00 UTC = 06:30 Tehran
-    # 03:30 UTC = 07:00 Tehran
-    - cron: "0 3 * * *"
-    - cron: "30 3 * * *"
-
-permissions:
-  contents: read
-
-env:
-  SOURCE_ZIP: QazvinJobs-Import-Crawler-0.6.0-SOURCE-FIDELITY-FINAL.zip
-  PROJECT_DIR: qazvinjobs-import-crawler
 
 jobs:
 
-  e_estekhdam:
-    name: E-Estekhdam Daily Import
-
-    if: >-
-      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-      (inputs.sources == 'both' || inputs.sources == 'e-estekhdam'))
+  crawler:
 
     runs-on: ubuntu-latest
-    timeout-minutes: 55
-
-    concurrency:
-      group: qazvinjobs-e-estekhdam-import
-      cancel-in-progress: false
-
-    env:
-      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
-      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
-
-      QZIH_SOURCES: "e-estekhdam"
-      QZIH_SEED_URLS: ${{ inputs.seed_url || '' }}
-
-      QZIH_MAX_PAGES: ${{ inputs.max_pages || '20' }}
-      QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '500' }}
-      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '50' }}
-      QZIH_MAX_REVIEW: "5"
-      QZIH_MAX_AGE_DAYS: ${{ inputs.max_age_days || '2' }}
-      QZIH_RUN_LIMIT_MINUTES: "48"
 
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check source ZIP
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "========================================"
-          echo "QazvinJobs Import Crawler 0.5.2"
-          echo "Expected ZIP: ${SOURCE_ZIP}"
-          echo "Project dir: ${PROJECT_DIR}"
-          echo "========================================"
-
-          if [ ! -f "${SOURCE_ZIP}" ]; then
-            echo "ERROR: ${SOURCE_ZIP} not found in repository root."
-            echo ""
-            echo "Repository files:"
-            ls -lah
-            exit 1
-          fi
-
-          echo "ZIP found successfully:"
-          ls -lh "${SOURCE_ZIP}"
-
-      - name: Create project folder
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          rm -rf "${PROJECT_DIR}"
-          mkdir -p "${PROJECT_DIR}"
-
-          echo "Project folder created:"
-          ls -ld "${PROJECT_DIR}"
-
-      - name: Extract source ZIP
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          unzip -q "${SOURCE_ZIP}" -d "${PROJECT_DIR}"
-
-          echo "Extracted files:"
-          find "${PROJECT_DIR}" -maxdepth 3 -type f -print
-
-      - name: Validate extracted files
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          if [ ! -f "${PROJECT_DIR}/crawler.mjs" ]; then
-            echo "ERROR: crawler.mjs not found."
-            exit 1
-          fi
-
-          if [ ! -f "${PROJECT_DIR}/divar-auth.mjs" ]; then
-            echo "ERROR: divar-auth.mjs not found."
-            exit 1
-          fi
-
-          if [ ! -f "${PROJECT_DIR}/package.json" ]; then
-            echo "ERROR: package.json not found."
-            exit 1
-          fi
-
-          echo "Required source files are present."
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Check JavaScript syntax
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          cd "${PROJECT_DIR}"
-
-          node --check crawler.mjs
-          node --check divar-auth.mjs
-
-          echo "JavaScript syntax OK."
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          cd "${PROJECT_DIR}"
-          npm install --no-audit --no-fund
-
-      - name: Install Playwright Chromium
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          cd "${PROJECT_DIR}"
-          npx playwright install --with-deps chromium
-
-      - name: Check Import Hub secrets
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          if [ -z "${QZIH_IMPORT_ENDPOINT:-}" ]; then
-            echo "ERROR: QZIH_IMPORT_ENDPOINT secret is missing."
-            exit 1
-          fi
-
-          if [ -z "${QZIH_IMPORT_TOKEN:-}" ]; then
-            echo "ERROR: QZIH_IMPORT_TOKEN secret is missing."
-            exit 1
-          fi
-
-          echo "Import Hub secrets are available."
-
-      - name: Verify WordPress receiver
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          STATUS_URL="${QZIH_IMPORT_ENDPOINT%/batch}/status"
-
-          echo "Checking:"
-          echo "${STATUS_URL}"
-
-          curl \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --retry 2 \
-            --retry-delay 2 \
-            --max-time 30 \
-            -H "X-QZIH-Token: ${QZIH_IMPORT_TOKEN}" \
-            "${STATUS_URL}"
-
-          echo ""
-
-      - name: Run E-Estekhdam crawler
-        shell: bash
-        run: |
-          set -o pipefail
-
-          cd "${PROJECT_DIR}"
-
-          echo "========================================"
-          echo "QazvinJobs Import"
-          echo "Crawler: 0.5.2 JOB-ONLY"
-          echo "Source: e-estekhdam"
-          echo "ZIP: ${SOURCE_ZIP}"
-          echo "Seed: ${QZIH_SEED_URLS:-none}"
-          echo "Max pages: ${QZIH_MAX_PAGES}"
-          echo "Max candidates: ${QZIH_MAX_CANDIDATES}"
-          echo "Max accepted: ${QZIH_MAX_ACCEPT}"
-          echo "Max age: ${QZIH_MAX_AGE_DAYS}"
-          echo "========================================"
-
-          npm run crawl 2>&1 | tee crawler.log
-
-          CRAWLER_EXIT=${PIPESTATUS[0]}
-
-          echo ""
-          echo "Crawler exit code: ${CRAWLER_EXIT}"
-
-          if [ "${CRAWLER_EXIT}" -ne 0 ]; then
-            exit "${CRAWLER_EXIT}"
-          fi
-
-      - name: Create E-Estekhdam summary
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "# QazvinJobs Import Report"
-            echo ""
-            echo "**Crawler:** 0.5.2 JOB-ONLY"
-            echo ""
-            echo "**Source:** e-estekhdam"
-            echo ""
-            echo "**ZIP:** ${SOURCE_ZIP}"
-            echo ""
-            echo "**Seed URL:** ${QZIH_SEED_URLS:-none}"
-            echo ""
-            echo "## Crawler output"
-            echo ""
-            echo '```text'
-
-            if [ -f "${PROJECT_DIR}/crawler.log" ]; then
-              tail -n 180 "${PROJECT_DIR}/crawler.log"
-            else
-              echo "crawler.log was not created."
-            fi
-
-            echo '```'
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Upload E-Estekhdam diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e-estekhdam-diagnostics-${{ github.run_number }}
-          path: |
-            qazvinjobs-import-crawler/crawler.log
-            qazvinjobs-import-crawler/diagnostics/
-            qazvinjobs-import-crawler/e-estekhdam-controlled-diagnostics/
-            qazvinjobs-import-crawler/*.json
-          if-no-files-found: ignore
-          retention-days: 7
-
-
-  divar:
-    name: Divar Daily Import
-
-    if: >-
-      (github.event_name == 'schedule' && github.event.schedule == '30 3 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-      (inputs.sources == 'both' || inputs.sources == 'divar'))
-
-    runs-on: ubuntu-latest
-    timeout-minutes: 50
-
-    concurrency:
-      group: qazvinjobs-divar-import
-      cancel-in-progress: false
-
-    env:
-      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
-      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
-      QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
-
-      QZIH_SOURCES: "divar"
-      QZIH_SEED_URLS: ${{ inputs.seed_url || '' }}
-
-      QZIH_MAX_PAGES: ${{ inputs.max_pages || '12' }}
-      QZIH_MAX_CANDIDATES: ${{ inputs.max_candidates || '300' }}
-      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '50' }}
-      QZIH_MAX_REVIEW: "5"
-      QZIH_MAX_AGE_DAYS: ${{ inputs.max_age_days || '2' }}
-      QZIH_RUN_LIMIT_MINUTES: "43"
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
       - name: Check source ZIP
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -e
 
-          echo "========================================"
-          echo "QazvinJobs Import Crawler 0.5.2"
-          echo "Expected ZIP: ${SOURCE_ZIP}"
-          echo "Project dir: ${PROJECT_DIR}"
-          echo "========================================"
+          ZIP=$(ls *.zip | head -n 1)
 
-          if [ ! -f "${SOURCE_ZIP}" ]; then
-            echo "ERROR: ${SOURCE_ZIP} not found in repository root."
-            echo ""
-            echo "Repository files:"
-            ls -lah
+          if [ -z "$ZIP" ]; then
+            echo "No crawler zip found"
             exit 1
           fi
 
-          echo "ZIP found successfully:"
-          ls -lh "${SOURCE_ZIP}"
+          echo "Using ZIP: $ZIP"
 
-      - name: Create project folder
+
+      - name: Extract crawler
         shell: bash
         run: |
-          set -Eeuo pipefail
 
-          rm -rf "${PROJECT_DIR}"
-          mkdir -p "${PROJECT_DIR}"
+          set -e
 
-          echo "Project folder created:"
-          ls -ld "${PROJECT_DIR}"
+          mkdir -p crawler
 
-      - name: Extract source ZIP
-        shell: bash
-        run: |
-          set -Eeuo pipefail
+          ZIP=$(ls *.zip | head -n 1)
 
-          unzip -q "${SOURCE_ZIP}" -d "${PROJECT_DIR}"
+          unzip -o "$ZIP" -d crawler
 
-          echo "Extracted files:"
-          find "${PROJECT_DIR}" -maxdepth 3 -type f -print
+          echo "Extract completed"
 
-      - name: Validate extracted files
-        shell: bash
-        run: |
-          set -Eeuo pipefail
 
-          if [ ! -f "${PROJECT_DIR}/crawler.mjs" ]; then
-            echo "ERROR: crawler.mjs not found."
-            exit 1
-          fi
-
-          if [ ! -f "${PROJECT_DIR}/divar-auth.mjs" ]; then
-            echo "ERROR: divar-auth.mjs not found."
-            exit 1
-          fi
-
-          if [ ! -f "${PROJECT_DIR}/package.json" ]; then
-            echo "ERROR: package.json not found."
-            exit 1
-          fi
-
-          echo "Required source files are present."
-
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
 
-      - name: Check JavaScript syntax
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          cd "${PROJECT_DIR}"
-
-          node --check crawler.mjs
-          node --check divar-auth.mjs
-
-          echo "JavaScript syntax OK."
 
       - name: Install dependencies
-        shell: bash
+        working-directory: crawler
         run: |
-          set -Eeuo pipefail
 
-          cd "${PROJECT_DIR}"
-          npm install --no-audit --no-fund
+          npm install
 
-      - name: Install Playwright Chromium
-        shell: bash
+
+      - name: Install Playwright
+        working-directory: crawler
         run: |
-          set -Eeuo pipefail
 
-          cd "${PROJECT_DIR}"
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
 
-      - name: Check Import Hub secrets
-        shell: bash
+
+      - name: Run crawler
+        working-directory: crawler
+        env:
+
+          SOURCE:
+            ${{ github.event.inputs.source }}
+
+          SEED_URL:
+            ${{ github.event.inputs.seed_url }}
+
+          MAX_PAGES:
+            ${{ github.event.inputs.max_pages }}
+
+          MAX_CANDIDATES:
+            ${{ github.event.inputs.max_candidates }}
+
+          MAX_ACCEPT:
+            ${{ github.event.inputs.max_accept }}
+
+          MAX_AGE_DAYS:
+            ${{ github.event.inputs.max_age_days }}
+
         run: |
-          set -Eeuo pipefail
 
-          if [ -z "${QZIH_IMPORT_ENDPOINT:-}" ]; then
-            echo "ERROR: QZIH_IMPORT_ENDPOINT secret is missing."
-            exit 1
-          fi
+          node index.js
 
-          if [ -z "${QZIH_IMPORT_TOKEN:-}" ]; then
-            echo "ERROR: QZIH_IMPORT_TOKEN secret is missing."
-            exit 1
-          fi
 
-          echo "Import Hub secrets are available."
-
-      - name: Verify WordPress receiver
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          STATUS_URL="${QZIH_IMPORT_ENDPOINT%/batch}/status"
-
-          echo "Checking:"
-          echo "${STATUS_URL}"
-
-          curl \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --retry 2 \
-            --retry-delay 2 \
-            --max-time 30 \
-            -H "X-QZIH-Token: ${QZIH_IMPORT_TOKEN}" \
-            "${STATUS_URL}"
-
-          echo ""
-
-      - name: Run Divar crawler
-        shell: bash
-        run: |
-          set -o pipefail
-
-          cd "${PROJECT_DIR}"
-
-          echo "========================================"
-          echo "QazvinJobs Import"
-          echo "Crawler: 0.5.2 JOB-ONLY"
-          echo "Source: divar"
-          echo "ZIP: ${SOURCE_ZIP}"
-          echo "Seed: ${QZIH_SEED_URLS:-none}"
-          echo "Max pages: ${QZIH_MAX_PAGES}"
-          echo "Max candidates: ${QZIH_MAX_CANDIDATES}"
-          echo "Max accepted: ${QZIH_MAX_ACCEPT}"
-          echo "Max age: ${QZIH_MAX_AGE_DAYS}"
-          echo "========================================"
-
-          npm run crawl 2>&1 | tee crawler.log
-
-          CRAWLER_EXIT=${PIPESTATUS[0]}
-
-          echo ""
-          echo "Crawler exit code: ${CRAWLER_EXIT}"
-
-          if [ "${CRAWLER_EXIT}" -ne 0 ]; then
-            exit "${CRAWLER_EXIT}"
-          fi
-
-      - name: Create Divar summary
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "# QazvinJobs Import Report"
-            echo ""
-            echo "**Crawler:** 0.5.2 JOB-ONLY"
-            echo ""
-            echo "**Source:** divar"
-            echo ""
-            echo "**ZIP:** ${SOURCE_ZIP}"
-            echo ""
-            echo "**Seed URL:** ${QZIH_SEED_URLS:-none}"
-            echo ""
-            echo "## Crawler output"
-            echo ""
-            echo '```text'
-
-            if [ -f "${PROJECT_DIR}/crawler.log" ]; then
-              tail -n 180 "${PROJECT_DIR}/crawler.log"
-            else
-              echo "crawler.log was not created."
-            fi
-
-            echo '```'
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Upload Divar diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
+
         with:
-          name: divar-diagnostics-${{ github.run_number }}
+
+          name: crawler-diagnostics
+
           path: |
-            qazvinjobs-import-crawler/crawler.log
-            qazvinjobs-import-crawler/diagnostics/
-            qazvinjobs-import-crawler/divar-contact-diagnostics/
-            qazvinjobs-import-crawler/*.json
+
+            crawler/**/*.json
+            crawler/**/*.log
+
           if-no-files-found: ignore
-          retention-days: 7
