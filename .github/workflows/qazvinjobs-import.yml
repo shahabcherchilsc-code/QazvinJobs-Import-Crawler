@@ -68,7 +68,7 @@ jobs:
 
       - name: Show extracted files
         run: |
-          find qzih-crawler -maxdepth 2 -type f
+          find qzih-crawler -maxdepth 3 -type f
 
 
       - name: Setup Node.js
@@ -92,11 +92,15 @@ jobs:
       - name: Run crawler
         working-directory: qzih-crawler
         env:
-          QZIH_WP_URL: ${{ secrets.QZIH_WP_URL }}
-          QZIH_WP_TOKEN: ${{ secrets.QZIH_WP_TOKEN }}
+
+          QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT || secrets.QZIH_WP_URL }}
+
+          QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN || secrets.QZIH_WP_TOKEN }}
 
           QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
+
           QZIH_DIVAR_LOGIN_SECRET: ${{ secrets.QZIH_DIVAR_LOGIN_SECRET }}
+
 
         run: |
           node crawler.mjs
@@ -107,7 +111,7 @@ jobs:
         run: |
           echo "Crawler finished"
           echo "Sources: $QZIH_SOURCES"
-          echo "Max age: $QZIH_MAX_AGE_DAYS days"
+          echo "Max age: $QZIH_MAX_AGE_DAYS"
           echo "Max pages: $QZIH_MAX_PAGES"
           echo "Max candidates: $QZIH_MAX_CANDIDATES"
           echo "Max accepted: $QZIH_MAX_ACCEPTED"
