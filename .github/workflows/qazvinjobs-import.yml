@@ -3,31 +3,38 @@ name: QazvinJobs Import Crawler
 on:
   schedule:
     - cron: "30 5 * * *"
+
   workflow_dispatch:
     inputs:
       sources:
         description: "Sources to crawl"
         required: true
         default: "both"
+
       max_age_days:
         description: "Maximum ad age in days"
         required: true
         default: "7"
+
       max_pages:
         description: "Maximum search pages"
         required: true
         default: "20"
+
       max_candidates:
         description: "Maximum candidates"
         required: true
         default: "500"
+
       max_accepted:
         description: "Maximum accepted drafts"
         required: true
         default: "50"
 
+
 jobs:
   crawl:
+
     runs-on: ubuntu-latest
 
     env:
@@ -37,37 +44,50 @@ jobs:
       QZIH_MAX_CANDIDATES: ${{ github.event.inputs.max_candidates || '500' }}
       QZIH_MAX_ACCEPTED: ${{ github.event.inputs.max_accepted || '50' }}
 
+
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
       - name: Check source ZIP
         run: |
           ls -la
+
 
       - name: Create project folder
         run: |
           mkdir -p qzih-crawler
 
+
       - name: Extract crawler
         run: |
           unzip -o QazvinJobs-Import-Crawler-*.zip -d qzih-crawler
+
+
+      - name: Show extracted files
+        run: |
+          find qzih-crawler -maxdepth 2 -type f
+
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+
       - name: Install dependencies
         working-directory: qzih-crawler
         run: |
           npm install
 
+
       - name: Install Playwright
         working-directory: qzih-crawler
         run: |
           npx playwright install chromium
+
 
       - name: Run crawler
         working-directory: qzih-crawler
@@ -79,7 +99,8 @@ jobs:
           QZIH_DIVAR_LOGIN_SECRET: ${{ secrets.QZIH_DIVAR_LOGIN_SECRET }}
 
         run: |
-          node index.js
+          node crawler.mjs
+
 
       - name: Create summary
         if: always()
@@ -87,8 +108,10 @@ jobs:
           echo "Crawler finished"
           echo "Sources: $QZIH_SOURCES"
           echo "Max age: $QZIH_MAX_AGE_DAYS days"
+          echo "Max pages: $QZIH_MAX_PAGES"
           echo "Max candidates: $QZIH_MAX_CANDIDATES"
           echo "Max accepted: $QZIH_MAX_ACCEPTED"
+
 
       - name: Upload diagnostics
         if: always()
