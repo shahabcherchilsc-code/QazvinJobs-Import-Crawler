@@ -1,261 +1,101 @@
-name: QazvinJobs Daily Import
+name: QazvinJobs Import Crawler
 
 on:
   schedule:
-    # هر روز ساعت 9 صبح تهران
     - cron: "30 5 * * *"
-
   workflow_dispatch:
     inputs:
       sources:
-        description: "Source to crawl"
+        description: "Sources to crawl"
         required: true
         default: "both"
-        type: choice
-        options:
-          - both
-          - e-estekhdam
-          - divar
-
-      seed_url:
-        description: "Optional seed URL"
-        required: false
-        default: ""
-
+      max_age_days:
+        description: "Maximum ad age in days"
+        required: true
+        default: "7"
       max_pages:
         description: "Maximum search pages"
-        required: false
+        required: true
         default: "20"
-
       max_candidates:
         description: "Maximum candidates"
-        required: false
+        required: true
         default: "500"
-
-      max_accept:
+      max_accepted:
         description: "Maximum accepted drafts"
-        required: false
+        required: true
         default: "50"
 
-      max_age_days:
-        description: "Maximum ad age"
-        required: false
-        default: "3"
-
-
 jobs:
-
-  import:
-
-    name: QazvinJobs Import Crawler
-
+  crawl:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 60
-
-
     env:
-
-      SOURCE_ZIP: QazvinJobs-Import-Crawler-0.6.2-RECENT-FIRST-STRICT-DIVAR.zip
-
-      PROJECT_DIR: qazvinjobs-import-crawler
-
-      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
-
-      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
-
-      QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
-
-
       QZIH_SOURCES: ${{ github.event.inputs.sources || 'both' }}
-
-      QZIH_SEED_URLS: ${{ github.event.inputs.seed_url || '' }}
-
+      QZIH_MAX_AGE_DAYS: ${{ github.event.inputs.max_age_days || '7' }}
       QZIH_MAX_PAGES: ${{ github.event.inputs.max_pages || '20' }}
-
       QZIH_MAX_CANDIDATES: ${{ github.event.inputs.max_candidates || '500' }}
-
-      QZIH_MAX_ACCEPT: ${{ github.event.inputs.max_accept || '50' }}
-
-      QZIH_MAX_REVIEW: "5"
-
-      QZIH_MAX_AGE_DAYS: ${{ github.event.inputs.max_age_days || '3' }}
-
-      QZIH_RUN_LIMIT_MINUTES: "50"
-
+      QZIH_MAX_ACCEPTED: ${{ github.event.inputs.max_accepted || '50' }}
 
     steps:
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-
-
-    - name: Check source ZIP
-      shell: bash
-      run: |
-
-        set -e
-
-        test -f "${SOURCE_ZIP}" || {
-
-          echo "Crawler ZIP not found"
-
+      - name: Check source ZIP
+        run: |
           ls -la
 
-          exit 1
-
-        }
-
-
-
-    - name: Create project folder
-      shell: bash
-      run: |
-
-        rm -rf "${PROJECT_DIR}"
-
-        mkdir "${PROJECT_DIR}"
-
-
-
-    - name: Extract crawler
-      shell: bash
-      run: |
-
-        unzip -q "${SOURCE_ZIP}" -d "${PROJECT_DIR}"
-
-        find "${PROJECT_DIR}" -maxdepth 2 -type f
-
-
-
-    - name: Validate crawler
-      shell: bash
-      run: |
-
-        test -f "${PROJECT_DIR}/crawler.mjs"
-
-        test -f "${PROJECT_DIR}/package.json"
-
-        echo "Crawler files OK"
-
-
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: "22"
-
-
-
-    - name: Install dependencies
-      shell: bash
-      run: |
-
-        cd "${PROJECT_DIR}"
-
-        if [ -f package-lock.json ]; then
-
-          npm ci --no-audit --no-fund
-
-        else
-
-          npm install --no-audit --no-fund
-
-        fi
-
-
-
-    - name: Install Playwright
-      shell: bash
-      run: |
-
-        cd "${PROJECT_DIR}"
-
-        npx playwright install --with-deps chromium
-
-
-
-    - name: Verify Import Hub
-      shell: bash
-      run: |
-
-        test -n "${QZIH_IMPORT_ENDPOINT}"
-
-        test -n "${QZIH_IMPORT_TOKEN}"
-
-        echo "Import Hub secrets OK"
-
-
-
-    - name: Run crawler
-      shell: bash
-      run: |
-
-        cd "${PROJECT_DIR}"
-
-
-        echo "=============================="
-
-        echo "QazvinJobs Daily Import"
-
-        echo "Sources: ${QZIH_SOURCES}"
-
-        echo "Pages: ${QZIH_MAX_PAGES}"
-
-        echo "Candidates: ${QZIH_MAX_CANDIDATES}"
-
-        echo "Max age: ${QZIH_MAX_AGE_DAYS}"
-
-        echo "=============================="
-
-
-        npm run crawl | tee crawler.log
-
-
-
-    - name: Create summary
-      if: always()
-      shell: bash
-      run: |
-
-        echo "# QazvinJobs Import Result" >> $GITHUB_STEP_SUMMARY
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        echo "Source: ${QZIH_SOURCES}" >> $GITHUB_STEP_SUMMARY
-
-        echo "Age filter: ${QZIH_MAX_AGE_DAYS} days" >> $GITHUB_STEP_SUMMARY
-
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-
-        if [ -f "${PROJECT_DIR}/crawler.log" ]; then
-
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-          tail -100 "${PROJECT_DIR}/crawler.log" >> $GITHUB_STEP_SUMMARY
-
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-        fi
-
-
-
-    - name: Upload diagnostics
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-
-        name: qazvinjobs-import-diagnostics
-
-        path: |
-
-          qazvinjobs-import-crawler/crawler.log
-
-          qazvinjobs-import-crawler/diagnostics/
-
-        if-no-files-found: ignore
-
-        retention-days: 7
+      - name: Create project folder
+        run: |
+          mkdir -p qzih-crawler
+
+      - name: Extract crawler
+        run: |
+          unzip -o QazvinJobs-Import-Crawler-*.zip -d qzih-crawler
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: qzih-crawler
+        run: |
+          npm install
+
+      - name: Install Playwright
+        working-directory: qzih-crawler
+        run: |
+          npx playwright install chromium
+
+      - name: Run crawler
+        working-directory: qzih-crawler
+        env:
+          QZIH_WP_URL: ${{ secrets.QZIH_WP_URL }}
+          QZIH_WP_TOKEN: ${{ secrets.QZIH_WP_TOKEN }}
+
+          QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
+          QZIH_DIVAR_LOGIN_SECRET: ${{ secrets.QZIH_DIVAR_LOGIN_SECRET }}
+
+        run: |
+          node index.js
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "Crawler finished"
+          echo "Sources: $QZIH_SOURCES"
+          echo "Max age: $QZIH_MAX_AGE_DAYS days"
+          echo "Max candidates: $QZIH_MAX_CANDIDATES"
+          echo "Max accepted: $QZIH_MAX_ACCEPTED"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawler-diagnostics
+          path: |
+            qzih-crawler/*.json
+            qzih-crawler/logs/**
+          if-no-files-found: ignore
