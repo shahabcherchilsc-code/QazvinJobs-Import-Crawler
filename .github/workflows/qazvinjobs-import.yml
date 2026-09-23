@@ -4,9 +4,11 @@ on:
   workflow_dispatch:
 
   schedule:
+    # اجرای اصلی روزانه - ساعت 09:17 به وقت ایران
     - cron: '17 9 * * *'
       timezone: 'Asia/Tehran'
 
+    # اجرای پشتیبان روزانه - ساعت 19:37 به وقت ایران
     - cron: '37 19 * * *'
       timezone: 'Asia/Tehran'
 
@@ -37,33 +39,55 @@ jobs:
       QZIH_MAX_AGE_DAYS: '7'
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find crawler directory
+      - name: Extract crawler package
         shell: bash
         run: |
-          echo "Repository files:"
-          find . -maxdepth 4 -type f | sort | head -200
+          set -e
 
-          CRAWLER_FILE="$(find . -maxdepth 5 -type f -name 'crawler.mjs' | head -n 1)"
+          echo "Looking for crawler ZIP..."
+
+          ZIP_FILE="$(find . -maxdepth 3 -type f -iname 'QazvinJobs-Import-Crawler*.zip' | head -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: QazvinJobs Import Crawler ZIP was not found."
+            echo "Repository root files:"
+            find . -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+          echo "Crawler ZIP found: $ZIP_FILE"
+
+          RUNTIME_DIR="$GITHUB_WORKSPACE/.crawler-runtime"
+
+          rm -rf "$RUNTIME_DIR"
+          mkdir -p "$RUNTIME_DIR"
+
+          unzip -q "$ZIP_FILE" -d "$RUNTIME_DIR"
+
+          echo "Extracted crawler files:"
+          find "$RUNTIME_DIR" -maxdepth 4 -type f | sort
+
+          CRAWLER_FILE="$(find "$RUNTIME_DIR" -maxdepth 5 -type f -name 'crawler.mjs' | head -n 1)"
 
           if [ -z "$CRAWLER_FILE" ]; then
-            echo "ERROR: crawler.mjs was not found in repository."
+            echo "ERROR: crawler.mjs was not found after extracting ZIP."
             exit 1
           fi
 
           CRAWLER_DIR="$(dirname "$CRAWLER_FILE")"
 
           if [ ! -f "$CRAWLER_DIR/package.json" ]; then
-            echo "ERROR: package.json was not found beside crawler.mjs"
+            echo "ERROR: package.json was not found beside crawler.mjs."
             echo "Crawler directory: $CRAWLER_DIR"
             ls -la "$CRAWLER_DIR"
             exit 1
           fi
 
-          echo "Crawler found in: $CRAWLER_DIR"
+          echo "Crawler directory: $CRAWLER_DIR"
+
           echo "CRAWLER_DIR=$CRAWLER_DIR" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
@@ -74,18 +98,22 @@ jobs:
       - name: Install crawler dependencies
         shell: bash
         run: |
+          set -e
           cd "$CRAWLER_DIR"
           npm install --no-audit --no-fund
 
       - name: Install Chromium for Playwright
         shell: bash
         run: |
+          set -e
           cd "$CRAWLER_DIR"
           npx playwright install --with-deps chromium
 
       - name: Validate required settings
         shell: bash
         run: |
+          set -e
+
           if [ -z "$QZIH_IMPORT_ENDPOINT" ]; then
             echo "ERROR: QZIH_IMPORT_ENDPOINT is missing"
             exit 1
@@ -96,17 +124,18 @@ jobs:
             exit 1
           fi
 
-          echo "Import Hub configuration OK."
+          echo "Import Hub endpoint/token: OK"
 
           if [ -n "$QZIH_DIVAR_LOGIN_PHONE" ]; then
-            echo "Divar login phone configured."
+            echo "Divar login phone: configured"
           else
-            echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty."
+            echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty"
           fi
 
       - name: Run QazvinJobs crawler
         shell: bash
         run: |
+          set -e
           cd "$CRAWLER_DIR"
           npm run crawl
 
@@ -116,8 +145,8 @@ jobs:
         with:
           name: qazvinjobs-crawler-diagnostics-${{ github.run_id }}
           path: |
-            **/*.png
-            **/*.json
-            **/logs/**
+            .crawler-runtime/**/*.png
+            .crawler-runtime/**/*.json
+            .crawler-runtime/**/logs/**
           if-no-files-found: ignore
           retention-days: 7
