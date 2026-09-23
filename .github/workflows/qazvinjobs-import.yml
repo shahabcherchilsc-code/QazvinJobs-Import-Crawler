@@ -1,128 +1,111 @@
-name: QazvinJobs Import Crawler
+name: QazvinJobs Daily Import
 
 on:
-  schedule:
-    - cron: "30 5 * * *"
-
   workflow_dispatch:
-    inputs:
-      sources:
-        description: "Sources to crawl"
-        required: true
-        default: "both"
 
-      max_age_days:
-        description: "Maximum ad age in days"
-        required: true
-        default: "7"
+  schedule:
+    # اجرای اصلی روزانه - ساعت 09:17 به وقت ایران
+    - cron: '17 9 * * *'
+      timezone: 'Asia/Tehran'
 
-      max_pages:
-        description: "Maximum search pages"
-        required: true
-        default: "20"
+    # اجرای پشتیبان روزانه - ساعت 19:37 به وقت ایران
+    - cron: '37 19 * * *'
+      timezone: 'Asia/Tehran'
 
-      max_candidates:
-        description: "Maximum candidates"
-        required: true
-        default: "500"
-
-      max_accepted:
-        description: "Maximum accepted drafts"
-        required: true
-        default: "50"
-
+concurrency:
+  group: qazvinjobs-daily-crawler
+  cancel-in-progress: false
 
 jobs:
   crawl:
-
+    name: Crawl E-Estekhdam + Divar
     runs-on: ubuntu-latest
 
-    env:
-      QZIH_SOURCES: ${{ github.event.inputs.sources || 'both' }}
-      QZIH_MAX_AGE_DAYS: ${{ github.event.inputs.max_age_days || '7' }}
-      QZIH_MAX_PAGES: ${{ github.event.inputs.max_pages || '20' }}
-      QZIH_MAX_CANDIDATES: ${{ github.event.inputs.max_candidates || '500' }}
-      QZIH_MAX_ACCEPTED: ${{ github.event.inputs.max_accepted || '50' }}
+    # چون اجرای فعلی حدود 40 دقیقه طول کشیده،
+    # برای اطمینان تا 60 دقیقه فرصت می‌دهیم.
+    timeout-minutes: 60
 
+    env:
+      # ساعت داخلی Node / Log ها
+      TZ: Asia/Tehran
+
+      # اتصال به Import Hub سایت
+      QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+      QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+
+      # اتصال حساب دیوار
+      QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
+
+      # هر دو منبع
+      QZIH_SOURCES: both
+
+      # تعداد صفحات قابل بررسی
+      QZIH_MAX_PAGES: '20'
+
+      # حداکثر کاندید از هر منبع
+      QZIH_MAX_CANDIDATES: '500'
+
+      # حداکثر موارد قابل پذیرش در هر اجرا
+      QZIH_MAX_ACCEPT: '200'
+
+      # تعداد مواردی که در صورت نیاز
+      # برای بررسی دستی مدیر نگه داشته می‌شوند
+      QZIH_MAX_REVIEW: '5'
+
+      # حداکثر زمان فعالیت خود Crawler
+      QZIH_RUN_LIMIT_MINUTES: '50'
+
+      # فقط آگهی‌های حداکثر 7 روز اخیر منبع
+      QZIH_MAX_AGE_DAYS: '7'
 
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
-      - name: Check source ZIP
-        run: |
-          ls -la
-
-
-      - name: Create project folder
-        run: |
-          mkdir -p qzih-crawler
-
-
-      - name: Extract crawler
-        run: |
-          unzip -o QazvinJobs-Import-Crawler-*.zip -d qzih-crawler
-
-
-      - name: Show extracted files
-        run: |
-          find qzih-crawler -maxdepth 3 -type f
-
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
+      - name: Install crawler dependencies
+        run: npm install --no-audit --no-fund
 
-      - name: Install dependencies
-        working-directory: qzih-crawler
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Validate required settings
+        shell: bash
         run: |
-          npm install
+          if [ -z "$QZIH_IMPORT_ENDPOINT" ]; then
+            echo "ERROR: QZIH_IMPORT_ENDPOINT is missing"
+            exit 1
+          fi
 
+          if [ -z "$QZIH_IMPORT_TOKEN" ]; then
+            echo "ERROR: QZIH_IMPORT_TOKEN is missing"
+            exit 1
+          fi
 
-      - name: Install Playwright
-        working-directory: qzih-crawler
-        run: |
-          npx playwright install chromium
+          echo "Import Hub settings are available."
 
+          if [ -n "$QZIH_DIVAR_LOGIN_PHONE" ]; then
+            echo "Divar login phone is configured."
+          else
+            echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty."
+          fi
 
-      - name: Run crawler
-        working-directory: qzih-crawler
-        env:
+      - name: Run QazvinJobs crawler
+        run: npm run crawl
 
-          QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT || secrets.QZIH_WP_URL }}
-
-          QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN || secrets.QZIH_WP_TOKEN }}
-
-          QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
-
-          QZIH_DIVAR_LOGIN_SECRET: ${{ secrets.QZIH_DIVAR_LOGIN_SECRET }}
-
-
-        run: |
-          node crawler.mjs
-
-
-      - name: Create summary
-        if: always()
-        run: |
-          echo "Crawler finished"
-          echo "Sources: $QZIH_SOURCES"
-          echo "Max age: $QZIH_MAX_AGE_DAYS"
-          echo "Max pages: $QZIH_MAX_PAGES"
-          echo "Max candidates: $QZIH_MAX_CANDIDATES"
-          echo "Max accepted: $QZIH_MAX_ACCEPTED"
-
-
-      - name: Upload diagnostics
-        if: always()
+      - name: Upload diagnostics if crawler fails
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: crawler-diagnostics
+          name: qazvinjobs-crawler-diagnostics-${{ github.run_id }}
           path: |
-            qzih-crawler/*.json
-            qzih-crawler/logs/**
+            *.png
+            *.json
+            logs/**
           if-no-files-found: ignore
+          retention-days: 7
