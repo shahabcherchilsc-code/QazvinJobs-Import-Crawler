@@ -25,40 +25,75 @@ jobs:
     env:
       TZ: Asia/Tehran
 
+      # اتصال به سایت و Import Hub
       QZIH_SITE_URL: ${{ secrets.QZIH_SITE_URL }}
       QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
       QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+
+      # شماره حساب متصل دیوار
       QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
 
+      # هر دو منبع
       QZIH_SOURCES: both
+
+      # تعداد صفحات قابل بررسی
       QZIH_MAX_PAGES: '20'
+
+      # حداکثر کاندیدهای قابل بررسی
       QZIH_MAX_CANDIDATES: '500'
+
+      # حداکثر آگهی قابل قبول در هر اجرا
       QZIH_MAX_ACCEPT: '200'
+
+      # موارد نیازمند بررسی دستی
       QZIH_MAX_REVIEW: '5'
+
+      # حداکثر زمان کار خود خزنده
       QZIH_RUN_LIMIT_MINUTES: '50'
+
+      # فقط آگهی‌های حداکثر 7 روز اخیر منبع
       QZIH_MAX_AGE_DAYS: '7'
 
     steps:
+
+      # -----------------------------------------
+      # 1. دریافت فایل‌های Repository
+      # -----------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract crawler package
+      # -----------------------------------------
+      # 2. پیدا کردن جدیدترین ZIP و Extract کردن
+      # -----------------------------------------
+      - name: Extract latest crawler package
         shell: bash
         run: |
           set -e
 
-          echo "Looking for crawler ZIP..."
+          echo "========================================"
+          echo "Looking for latest QazvinJobs Crawler..."
+          echo "========================================"
 
-          ZIP_FILE="$(find . -maxdepth 3 -type f -iname 'QazvinJobs-Import-Crawler*.zip' | head -n 1)"
+          ZIP_FILE="$(
+            find . \
+              -maxdepth 3 \
+              -type f \
+              -iname 'QazvinJobs-Import-Crawler*.zip' \
+              -print |
+            sort -V |
+            tail -n 1
+          )"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: QazvinJobs Import Crawler ZIP was not found."
-            echo "Repository root files:"
+            echo "ERROR: No QazvinJobs Import Crawler ZIP found."
+            echo ""
+            echo "Repository files:"
             find . -maxdepth 3 -type f | sort
             exit 1
           fi
 
-          echo "Crawler ZIP found: $ZIP_FILE"
+          echo "Selected crawler package:"
+          echo "$ZIP_FILE"
 
           RUNTIME_DIR="$GITHUB_WORKSPACE/.crawler-runtime"
 
@@ -67,10 +102,20 @@ jobs:
 
           unzip -q "$ZIP_FILE" -d "$RUNTIME_DIR"
 
-          echo "Extracted crawler files:"
-          find "$RUNTIME_DIR" -maxdepth 4 -type f | sort
+          echo ""
+          echo "Extracted files:"
+          find "$RUNTIME_DIR" -maxdepth 5 -type f | sort
 
-          CRAWLER_FILE="$(find "$RUNTIME_DIR" -maxdepth 5 -type f -name 'crawler.mjs' | head -n 1)"
+          echo ""
+          echo "Looking for crawler.mjs..."
+
+          CRAWLER_FILE="$(
+            find "$RUNTIME_DIR" \
+              -maxdepth 6 \
+              -type f \
+              -name 'crawler.mjs' |
+            head -n 1
+          )"
 
           if [ -z "$CRAWLER_FILE" ]; then
             echo "ERROR: crawler.mjs was not found after extracting ZIP."
@@ -81,64 +126,134 @@ jobs:
 
           if [ ! -f "$CRAWLER_DIR/package.json" ]; then
             echo "ERROR: package.json was not found beside crawler.mjs."
-            echo "Crawler directory: $CRAWLER_DIR"
+            echo ""
+            echo "Crawler directory:"
+            echo "$CRAWLER_DIR"
+            echo ""
             ls -la "$CRAWLER_DIR"
             exit 1
           fi
 
-          echo "Crawler directory: $CRAWLER_DIR"
+          echo ""
+          echo "Crawler directory detected:"
+          echo "$CRAWLER_DIR"
 
           echo "CRAWLER_DIR=$CRAWLER_DIR" >> "$GITHUB_ENV"
 
+      # -----------------------------------------
+      # 3. Node.js
+      # -----------------------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      # -----------------------------------------
+      # 4. نصب Dependency های Crawler
+      # -----------------------------------------
       - name: Install crawler dependencies
         shell: bash
         run: |
           set -e
-          cd "$CRAWLER_DIR"
-          npm install --no-audit --no-fund
 
+          cd "$CRAWLER_DIR"
+
+          echo "Installing crawler dependencies..."
+
+          npm install \
+            --no-audit \
+            --no-fund
+
+      # -----------------------------------------
+      # 5. نصب Chromium مورد نیاز Playwright
+      # -----------------------------------------
       - name: Install Chromium for Playwright
         shell: bash
         run: |
           set -e
+
           cd "$CRAWLER_DIR"
+
           npx playwright install --with-deps chromium
 
+      # -----------------------------------------
+      # 6. بررسی تنظیمات ضروری
+      # -----------------------------------------
       - name: Validate required settings
         shell: bash
         run: |
           set -e
 
+          echo "Checking Import Hub configuration..."
+
           if [ -z "$QZIH_IMPORT_ENDPOINT" ]; then
-            echo "ERROR: QZIH_IMPORT_ENDPOINT is missing"
+            echo "ERROR: QZIH_IMPORT_ENDPOINT is missing."
             exit 1
           fi
 
           if [ -z "$QZIH_IMPORT_TOKEN" ]; then
-            echo "ERROR: QZIH_IMPORT_TOKEN is missing"
+            echo "ERROR: QZIH_IMPORT_TOKEN is missing."
             exit 1
           fi
 
-          echo "Import Hub endpoint/token: OK"
+          if [ -z "$QZIH_SITE_URL" ]; then
+            echo "WARNING: QZIH_SITE_URL is empty."
+          else
+            echo "Site URL: configured"
+          fi
+
+          echo "Import endpoint: configured"
+          echo "Import token: configured"
 
           if [ -n "$QZIH_DIVAR_LOGIN_PHONE" ]; then
             echo "Divar login phone: configured"
           else
-            echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty"
+            echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty."
           fi
 
+      # -----------------------------------------
+      # 7. نمایش نسخه Crawler
+      # -----------------------------------------
+      - name: Show crawler version
+        shell: bash
+        run: |
+          set -e
+
+          cd "$CRAWLER_DIR"
+
+          echo "========================================"
+          echo "Crawler package selected:"
+          echo "$CRAWLER_DIR"
+          echo "========================================"
+
+          if grep -q "0.6.3" crawler.mjs; then
+            echo "Crawler version 0.6.3 detected."
+          else
+            echo "Crawler version string:"
+            grep -Ei "version|0\.[0-9]+\.[0-9]+" crawler.mjs | head -n 10 || true
+          fi
+
+      # -----------------------------------------
+      # 8. اجرای اصلی Crawler
+      # -----------------------------------------
       - name: Run QazvinJobs crawler
         shell: bash
         run: |
           set -e
+
           cd "$CRAWLER_DIR"
+
+          echo "========================================"
+          echo "Starting QazvinJobs crawler"
+          echo "Sources: E-Estekhdam + Divar"
+          echo "Max age: 7 days"
+          echo "========================================"
+
           npm run crawl
 
+      # -----------------------------------------
+      # 9. ذخیره گزارش‌های خطا در صورت Failure
+      # -----------------------------------------
       - name: Upload diagnostics if crawler fails
         if: failure()
         uses: actions/upload-artifact@v4
@@ -147,6 +262,8 @@ jobs:
           path: |
             .crawler-runtime/**/*.png
             .crawler-runtime/**/*.json
+            .crawler-runtime/**/*.html
+            .crawler-runtime/**/*.log
             .crawler-runtime/**/logs/**
           if-no-files-found: ignore
           retention-days: 7
