@@ -2,14 +2,16 @@ name: QazvinJobs Daily Import
 
 on:
   workflow_dispatch:
+    inputs:
+      max_accept:
+        description: 'حداکثر پیش‌نویس در اجرای دستی؛ اجرای اول ۱۰ مورد'
+        required: true
+        default: '10'
+        type: string
 
   schedule:
     # اجرای اصلی روزانه - ساعت 09:17 به وقت ایران
     - cron: '17 9 * * *'
-      timezone: 'Asia/Tehran'
-
-    # اجرای پشتیبان روزانه - ساعت 19:37 به وقت ایران
-    - cron: '37 19 * * *'
       timezone: 'Asia/Tehran'
 
 concurrency:
@@ -43,7 +45,7 @@ jobs:
       QZIH_MAX_CANDIDATES: '500'
 
       # حداکثر آگهی قابل قبول در هر اجرا
-      QZIH_MAX_ACCEPT: '200'
+      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '200' }}
 
       # موارد نیازمند بررسی دستی
       QZIH_MAX_REVIEW: '5'
@@ -51,8 +53,14 @@ jobs:
       # حداکثر زمان کار خود خزنده
       QZIH_RUN_LIMIT_MINUTES: '50'
 
-      # فقط آگهی‌های حداکثر 7 روز اخیر منبع
-      QZIH_MAX_AGE_DAYS: '7'
+      # فقط آگهی‌های ۲۴ ساعت اخیر که قبلاً وارد نشده‌اند
+      QZIH_MAX_AGE_DAYS: '1'
+      QZIH_IMPORT_HISTORY_FILE: ${{ github.workspace }}/.qazvinjobs-import-state/history.json
+      QZIH_REQUIRE_KNOWN_AGE: '1'
+      QZIH_ALLOW_CONTACT_REVIEW: '0'
+      # اجرای روزانه نباید روی آگهیِ تستِ باقی‌مانده در وردپرس قفل شود
+      QZIH_ENABLE_CONTROLLED_TEST: '0'
+      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.6-DAILY-NEW-ONLY.zip'
 
     steps:
 
@@ -63,9 +71,19 @@ jobs:
         uses: actions/checkout@v4
 
       # -----------------------------------------
-      # 2. پیدا کردن جدیدترین ZIP و Extract کردن
+      # 2. بازیابی سابقه شناسه‌ها و استخراج نسخه مشخص خزنده
       # -----------------------------------------
-      - name: Extract latest crawler package
+      - name: Restore imported source IDs
+        id: import_history
+        uses: actions/cache/restore@v4
+        with:
+          path: .qazvinjobs-import-state/history.json
+          key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            qazvinjobs-import-history-v1-
+          fail-on-cache-miss: false
+
+      - name: Extract crawler package
         shell: bash
         run: |
           set -e
@@ -78,7 +96,7 @@ jobs:
             find . \
               -maxdepth 3 \
               -type f \
-              -iname 'QazvinJobs-Import-Crawler*.zip' \
+              -name "$QZIH_CRAWLER_PACKAGE" \
               -print |
             sort -V |
             tail -n 1
@@ -226,12 +244,14 @@ jobs:
           echo "$CRAWLER_DIR"
           echo "========================================"
 
-          if grep -q "0.6.3" crawler.mjs; then
-            echo "Crawler version 0.6.3 detected."
-          else
-            echo "Crawler version string:"
-            grep -Ei "version|0\.[0-9]+\.[0-9]+" crawler.mjs | head -n 10 || true
-          fi
+          node -p '"Crawler version: " + JSON.parse(require("fs").readFileSync("package.json", "utf8")).version'
+
+      - name: Test parser before importing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CRAWLER_DIR"
+          npm test
 
       # -----------------------------------------
       # 8. اجرای اصلی Crawler
@@ -246,24 +266,29 @@ jobs:
           echo "========================================"
           echo "Starting QazvinJobs crawler"
           echo "Sources: E-Estekhdam + Divar"
-          echo "Max age: 7 days"
+          echo "Max age: $QZIH_MAX_AGE_DAYS days; direct contact required"
           echo "========================================"
 
-          npm run crawl
+          set -o pipefail
+          npm run crawl 2>&1 | tee run.log
+
+      - name: Save imported source IDs
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .qazvinjobs-import-state/history.json
+          key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       # -----------------------------------------
-      # 9. ذخیره گزارش‌های خطا در صورت Failure
+      # 9. ذخیره گزارش اجرا حتی در صورت موفقیت
       # -----------------------------------------
-      - name: Upload diagnostics if crawler fails
-        if: failure()
+      - name: Upload crawl run report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qazvinjobs-crawler-diagnostics-${{ github.run_id }}
           path: |
-            .crawler-runtime/**/*.png
-            .crawler-runtime/**/*.json
-            .crawler-runtime/**/*.html
-            .crawler-runtime/**/*.log
-            .crawler-runtime/**/logs/**
+            .crawler-runtime/**/run.log
+            .crawler-runtime/**/run-summary.json
           if-no-files-found: ignore
           retention-days: 7
