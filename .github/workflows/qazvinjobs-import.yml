@@ -3,6 +3,16 @@ name: QazvinJobs Daily Import
 on:
   workflow_dispatch:
     inputs:
+      validate_only:
+        description: 'فقط اجرای تست‌ها بدون انتقال آگهی (برای بررسی نسخه جدید)'
+        required: false
+        default: false
+        type: boolean
+      source_url:
+        description: 'اختیاری: لینک یک آگهی برای به‌روزرسانی همان پیش‌نویس؛ برای اجرای روزانه خالی بماند'
+        required: false
+        default: ''
+        type: string
       max_accept:
         description: 'حداکثر پیش‌نویس در اجرای دستی؛ اجرای اول ۱۰ مورد'
         required: true
@@ -37,6 +47,7 @@ jobs:
 
       # هر دو منبع
       QZIH_SOURCES: both
+      QZIH_SEED_URLS: ${{ inputs.source_url || '' }}
 
       # تعداد صفحات قابل بررسی
       QZIH_MAX_PAGES: '20'
@@ -60,7 +71,7 @@ jobs:
       QZIH_ALLOW_CONTACT_REVIEW: '0'
       # اجرای روزانه نباید روی آگهیِ تستِ باقی‌مانده در وردپرس قفل شود
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.7-DAILY-NEW-FIELD-FIX.zip'
+      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.8-COMPANY-SEO-FIX.zip'
 
     steps:
 
@@ -246,6 +257,16 @@ jobs:
 
           node -p '"Crawler version: " + JSON.parse(require("fs").readFileSync("package.json", "utf8")).version'
 
+      # نسخه دقیق کد گیرنده همراه بسته است؛ تست‌ها روی سایت واقعی اجرا نمی‌شوند.
+      - name: Test Import Hub company and SEO handling
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CRAWLER_DIR"
+          php -v
+          find tests/php-importer -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+          php tests/php-importer/tests/importer-regressions.php
+
       - name: Test parser before importing
         shell: bash
         run: |
@@ -257,6 +278,7 @@ jobs:
       # 8. اجرای اصلی Crawler
       # -----------------------------------------
       - name: Run QazvinJobs crawler
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.validate_only }}
         shell: bash
         run: |
           set -e
