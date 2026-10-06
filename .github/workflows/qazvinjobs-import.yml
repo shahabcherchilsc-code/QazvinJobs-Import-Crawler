@@ -1,5 +1,9 @@
 name: QazvinJobs Daily Import
 
+# Daily schedule runs from the repository default branch.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -71,7 +75,7 @@ jobs:
       QZIH_ALLOW_CONTACT_REVIEW: '0'
       # اجرای روزانه نباید روی آگهیِ تستِ باقی‌مانده در وردپرس قفل شود
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.8-COMPANY-SEO-FIX.zip'
+      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.9-SHORT-SEO-DAILY.zip'
 
     steps:
 
