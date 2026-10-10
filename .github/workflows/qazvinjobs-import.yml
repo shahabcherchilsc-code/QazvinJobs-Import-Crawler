@@ -3,6 +3,7 @@ name: QazvinJobs Daily Import
 # Daily schedule runs from the repository default branch.
 permissions:
   contents: read
+  actions: read
 
 on:
   workflow_dispatch:
@@ -24,9 +25,9 @@ on:
         type: string
 
   schedule:
-    # اجرای اصلی روزانه - ساعت 09:17 به وقت ایران
-    - cron: '17 9 * * *'
-      timezone: 'Asia/Tehran'
+    # یک اجرای روزانه: 05:47 UTC برابر 09:17 به وقت ایران
+    # شروع زمان‌بندی‌شده در GitHub ممکن است با تأخیر انجام شود.
+    - cron: '47 5 * * *'
 
 concurrency:
   group: qazvinjobs-daily-crawler
@@ -78,6 +79,35 @@ jobs:
       QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.9-SHORT-SEO-DAILY.zip'
 
     steps:
+
+      # ثبت زمان ایجاد اجرا و شروع کار برای تشخیص تأخیر زمان‌بندی/صف
+      - name: Report workflow start time
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QJ_REPOSITORY: ${{ github.repository }}
+          QJ_RUN_ID: ${{ github.run_id }}
+          QJ_EVENT: ${{ github.event_name }}
+          QJ_SCHEDULE: ${{ github.event.schedule }}
+          QJ_WORKFLOW_REF: ${{ github.workflow_ref }}
+          QJ_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Daily import timing"
+            echo "Configured daily time: 09:17 Asia/Tehran / 05:47 UTC"
+            echo "Runner clock (UTC): $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
+            echo "Runner clock (Iran): $(TZ=Asia/Tehran date '+%Y-%m-%d %H:%M:%S %Z')"
+            echo "Event: $QJ_EVENT"
+            echo "Triggered cron expression: $QJ_SCHEDULE"
+            echo "Workflow revision: $QJ_WORKFLOW_REF / $QJ_WORKFLOW_SHA"
+            echo '```json'
+            if ! gh api "repos/$QJ_REPOSITORY/actions/runs/$QJ_RUN_ID" \
+              --jq '{event, created_at, run_started_at, run_attempt, head_sha, path}'; then
+              echo 'Timing metadata unavailable; crawler will continue.'
+            fi
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # -----------------------------------------
       # 1. دریافت فایل‌های Repository
@@ -291,6 +321,8 @@ jobs:
 
           echo "========================================"
           echo "Starting QazvinJobs crawler"
+          echo "Crawler start (UTC): $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "Crawler start (Iran): $(TZ=Asia/Tehran date '+%Y-%m-%d %H:%M:%S %Z')"
           echo "Sources: E-Estekhdam + Divar"
           echo "Max age: $QZIH_MAX_AGE_DAYS days; direct contact required"
           echo "========================================"
