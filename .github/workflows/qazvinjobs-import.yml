@@ -1,15 +1,20 @@
+
 name: QazvinJobs Daily Import
 
 # Daily schedule runs from the repository default branch.
 permissions:
   contents: read
-  actions: read
 
 on:
   workflow_dispatch:
     inputs:
       validate_only:
         description: 'فقط اجرای تست‌ها بدون انتقال آگهی (برای بررسی نسخه جدید)'
+        required: false
+        default: false
+        type: boolean
+      connect_divar:
+        description: 'اتصال مجدد حساب دیوار با کد پیامکی (فقط اجرای دستی و با واردکردن کد در وردپرس)'
         required: false
         default: false
         type: boolean
@@ -25,9 +30,9 @@ on:
         type: string
 
   schedule:
-    # یک اجرای روزانه: 05:47 UTC برابر 09:17 به وقت ایران
-    # شروع زمان‌بندی‌شده در GitHub ممکن است با تأخیر انجام شود.
-    - cron: '47 5 * * *'
+    # اجرای اصلی روزانه - ساعت 09:17 به وقت ایران
+    - cron: '17 9 * * *'
+      timezone: 'Asia/Tehran'
 
 concurrency:
   group: qazvinjobs-daily-crawler
@@ -71,43 +76,16 @@ jobs:
 
       # فقط آگهی‌های ۲۴ ساعت اخیر که قبلاً وارد نشده‌اند
       QZIH_MAX_AGE_DAYS: '1'
+      # آگهی‌های امروز و دیروز به وقت ایران؛ نه صرفاً ۲۴ ساعت شناور
+      QZIH_FRESHNESS_MODE: today_yesterday
       QZIH_IMPORT_HISTORY_FILE: ${{ github.workspace }}/.qazvinjobs-import-state/history.json
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
       # اجرای روزانه نباید روی آگهیِ تستِ باقی‌مانده در وردپرس قفل شود
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.9-SHORT-SEO-DAILY.zip'
+      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.10-CALENDAR-DIVAR-RECOVERY.zip'
 
     steps:
-
-      # ثبت زمان ایجاد اجرا و شروع کار برای تشخیص تأخیر زمان‌بندی/صف
-      - name: Report workflow start time
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          QJ_REPOSITORY: ${{ github.repository }}
-          QJ_RUN_ID: ${{ github.run_id }}
-          QJ_EVENT: ${{ github.event_name }}
-          QJ_SCHEDULE: ${{ github.event.schedule }}
-          QJ_WORKFLOW_REF: ${{ github.workflow_ref }}
-          QJ_WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: |
-          set -euo pipefail
-          {
-            echo "### Daily import timing"
-            echo "Configured daily time: 09:17 Asia/Tehran / 05:47 UTC"
-            echo "Runner clock (UTC): $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
-            echo "Runner clock (Iran): $(TZ=Asia/Tehran date '+%Y-%m-%d %H:%M:%S %Z')"
-            echo "Event: $QJ_EVENT"
-            echo "Triggered cron expression: $QJ_SCHEDULE"
-            echo "Workflow revision: $QJ_WORKFLOW_REF / $QJ_WORKFLOW_SHA"
-            echo '```json'
-            if ! gh api "repos/$QJ_REPOSITORY/actions/runs/$QJ_RUN_ID" \
-              --jq '{event, created_at, run_started_at, run_attempt, head_sha, path}'; then
-              echo 'Timing metadata unavailable; crawler will continue.'
-            fi
-            echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # -----------------------------------------
       # 1. دریافت فایل‌های Repository
@@ -311,8 +289,18 @@ jobs:
       # -----------------------------------------
       # 8. اجرای اصلی Crawler
       # -----------------------------------------
+      # On-demand login: the OTP is entered into the existing WordPress Hub,
+      # never into GitHub logs or a GitHub input. No crawl runs during login.
+      - name: Connect Divar account (manual OTP, no import)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.connect_divar && !inputs.validate_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CRAWLER_DIR"
+          node divar-auth.mjs
+
       - name: Run QazvinJobs crawler
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.validate_only }}
+        if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.validate_only && !inputs.connect_divar) }}
         shell: bash
         run: |
           set -e
@@ -321,14 +309,19 @@ jobs:
 
           echo "========================================"
           echo "Starting QazvinJobs crawler"
-          echo "Crawler start (UTC): $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
-          echo "Crawler start (Iran): $(TZ=Asia/Tehran date '+%Y-%m-%d %H:%M:%S %Z')"
           echo "Sources: E-Estekhdam + Divar"
-          echo "Max age: $QZIH_MAX_AGE_DAYS days; direct contact required"
+          echo "Freshness: $QZIH_FRESHNESS_MODE (Iran timezone); direct contact required"
           echo "========================================"
 
           set -o pipefail
           npm run crawl 2>&1 | tee run.log
+
+      - name: Explain zero-import result in GitHub Summary
+        if: always()
+        shell: bash
+        run: |
+          cd "$CRAWLER_DIR"
+          node report-run.mjs run-summary.json
 
       - name: Save imported source IDs
         if: always()
