@@ -1,7 +1,6 @@
 
 name: QazvinJobs Daily Import
 
-# Daily schedule runs from the repository default branch.
 permissions:
   contents: read
 
@@ -9,28 +8,30 @@ on:
   workflow_dispatch:
     inputs:
       validate_only:
-        description: 'فقط اجرای تست‌ها بدون انتقال آگهی (برای بررسی نسخه جدید)'
+        description: 'Run tests only without importing jobs'
         required: false
         default: false
         type: boolean
+
       connect_divar:
-        description: 'اتصال مجدد حساب دیوار با کد پیامکی (فقط اجرای دستی و با واردکردن کد در وردپرس)'
+        description: 'Reconnect Divar account using WordPress OTP'
         required: false
         default: false
         type: boolean
+
       source_url:
-        description: 'اختیاری: لینک یک آگهی برای به‌روزرسانی همان پیش‌نویس؛ برای اجرای روزانه خالی بماند'
+        description: 'Optional single job URL'
         required: false
         default: ''
         type: string
+
       max_accept:
-        description: 'حداکثر پیش‌نویس در اجرای دستی؛ اجرای اول ۱۰ مورد'
+        description: 'Maximum accepted jobs for manual run'
         required: true
         default: '10'
         type: string
 
   schedule:
-    # اجرای اصلی روزانه - ساعت 09:17 به وقت ایران
     - cron: '17 9 * * *'
       timezone: 'Asia/Tehran'
 
@@ -47,55 +48,37 @@ jobs:
     env:
       TZ: Asia/Tehran
 
-      # اتصال به سایت و Import Hub
       QZIH_SITE_URL: ${{ secrets.QZIH_SITE_URL }}
       QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
       QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
-
-      # شماره حساب متصل دیوار
       QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
 
-      # هر دو منبع
       QZIH_SOURCES: both
       QZIH_SEED_URLS: ${{ inputs.source_url || '' }}
 
-      # تعداد صفحات قابل بررسی
       QZIH_MAX_PAGES: '20'
-
-      # حداکثر کاندیدهای قابل بررسی
       QZIH_MAX_CANDIDATES: '500'
-
-      # حداکثر آگهی قابل قبول در هر اجرا
       QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '200' }}
-
-      # موارد نیازمند بررسی دستی
       QZIH_MAX_REVIEW: '5'
-
-      # حداکثر زمان کار خود خزنده
       QZIH_RUN_LIMIT_MINUTES: '50'
 
-      # فقط آگهی‌های ۲۴ ساعت اخیر که قبلاً وارد نشده‌اند
       QZIH_MAX_AGE_DAYS: '1'
-      # آگهی‌های امروز و دیروز به وقت ایران؛ نه صرفاً ۲۴ ساعت شناور
       QZIH_FRESHNESS_MODE: today_yesterday
       QZIH_IMPORT_HISTORY_FILE: ${{ github.workspace }}/.qazvinjobs-import-state/history.json
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
-      # اجرای روزانه نباید روی آگهیِ تستِ باقی‌مانده در وردپرس قفل شود
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.10-CALENDAR-DIVAR-RECOVERY.zip'
+
+      # Exact ZIP filename currently uploaded to GitHub
+      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.10-CALENDAR-DIVAR-RECOVERY-2.zip'
 
     steps:
 
-      # -----------------------------------------
-      # 1. دریافت فایل‌های Repository
-      # -----------------------------------------
+      # Step 1 - Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -----------------------------------------
-      # 2. بازیابی سابقه شناسه‌ها و استخراج نسخه مشخص خزنده
-      # -----------------------------------------
+      # Step 2 - Restore imported source IDs
       - name: Restore imported source IDs
         id: import_history
         uses: actions/cache/restore@v4
@@ -106,13 +89,14 @@ jobs:
             qazvinjobs-import-history-v1-
           fail-on-cache-miss: false
 
+      # Step 3 - Extract crawler package
       - name: Extract crawler package
         shell: bash
         run: |
           set -e
 
           echo "========================================"
-          echo "Looking for latest QazvinJobs Crawler..."
+          echo "Looking for QazvinJobs Crawler..."
           echo "========================================"
 
           ZIP_FILE="$(
@@ -127,6 +111,9 @@ jobs:
 
           if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: No QazvinJobs Import Crawler ZIP found."
+            echo ""
+            echo "Expected package:"
+            echo "$QZIH_CRAWLER_PACKAGE"
             echo ""
             echo "Repository files:"
             find . -maxdepth 3 -type f | sort
@@ -159,18 +146,14 @@ jobs:
           )"
 
           if [ -z "$CRAWLER_FILE" ]; then
-            echo "ERROR: crawler.mjs was not found after extracting ZIP."
+            echo "ERROR: crawler.mjs was not found."
             exit 1
           fi
 
           CRAWLER_DIR="$(dirname "$CRAWLER_FILE")"
 
           if [ ! -f "$CRAWLER_DIR/package.json" ]; then
-            echo "ERROR: package.json was not found beside crawler.mjs."
-            echo ""
-            echo "Crawler directory:"
-            echo "$CRAWLER_DIR"
-            echo ""
+            echo "ERROR: package.json was not found."
             ls -la "$CRAWLER_DIR"
             exit 1
           fi
@@ -181,17 +164,13 @@ jobs:
 
           echo "CRAWLER_DIR=$CRAWLER_DIR" >> "$GITHUB_ENV"
 
-      # -----------------------------------------
-      # 3. Node.js
-      # -----------------------------------------
+      # Step 4 - Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # -----------------------------------------
-      # 4. نصب Dependency های Crawler
-      # -----------------------------------------
+      # Step 5 - Install crawler dependencies
       - name: Install crawler dependencies
         shell: bash
         run: |
@@ -205,9 +184,7 @@ jobs:
             --no-audit \
             --no-fund
 
-      # -----------------------------------------
-      # 5. نصب Chromium مورد نیاز Playwright
-      # -----------------------------------------
+      # Step 6 - Install Chromium
       - name: Install Chromium for Playwright
         shell: bash
         run: |
@@ -217,9 +194,7 @@ jobs:
 
           npx playwright install --with-deps chromium
 
-      # -----------------------------------------
-      # 6. بررسی تنظیمات ضروری
-      # -----------------------------------------
+      # Step 7 - Validate settings
       - name: Validate required settings
         shell: bash
         run: |
@@ -249,12 +224,10 @@ jobs:
           if [ -n "$QZIH_DIVAR_LOGIN_PHONE" ]; then
             echo "Divar login phone: configured"
           else
-            echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty."
+            echo "WARNING: Divar login phone is empty."
           fi
 
-      # -----------------------------------------
-      # 7. نمایش نسخه Crawler
-      # -----------------------------------------
+      # Step 8 - Show crawler version
       - name: Show crawler version
         shell: bash
         run: |
@@ -269,60 +242,78 @@ jobs:
 
           node -p '"Crawler version: " + JSON.parse(require("fs").readFileSync("package.json", "utf8")).version'
 
-      # نسخه دقیق کد گیرنده همراه بسته است؛ تست‌ها روی سایت واقعی اجرا نمی‌شوند.
+      # Step 9 - Test PHP Import Hub
       - name: Test Import Hub company and SEO handling
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$CRAWLER_DIR"
+
           php -v
-          find tests/php-importer -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+
+          find tests/php-importer \
+            -type f \
+            -name '*.php' \
+            -print0 |
+            xargs -0 -n1 php -l
+
           php tests/php-importer/tests/importer-regressions.php
 
+      # Step 10 - Test crawler parser
       - name: Test parser before importing
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$CRAWLER_DIR"
+
           npm test
 
-      # -----------------------------------------
-      # 8. اجرای اصلی Crawler
-      # -----------------------------------------
-      # On-demand login: the OTP is entered into the existing WordPress Hub,
-      # never into GitHub logs or a GitHub input. No crawl runs during login.
+      # Step 11 - Connect Divar manually
       - name: Connect Divar account (manual OTP, no import)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.connect_divar && !inputs.validate_only }}
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$CRAWLER_DIR"
+
           node divar-auth.mjs
 
+      # Step 12 - Run crawler
       - name: Run QazvinJobs crawler
         if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.validate_only && !inputs.connect_divar) }}
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           cd "$CRAWLER_DIR"
 
           echo "========================================"
           echo "Starting QazvinJobs crawler"
           echo "Sources: E-Estekhdam + Divar"
-          echo "Freshness: $QZIH_FRESHNESS_MODE (Iran timezone); direct contact required"
+          echo "Freshness: $QZIH_FRESHNESS_MODE"
+          echo "Timezone: Asia/Tehran"
+          echo "Direct contact required"
           echo "========================================"
 
-          set -o pipefail
           npm run crawl 2>&1 | tee run.log
 
+      # Step 13 - Generate run summary
       - name: Explain zero-import result in GitHub Summary
-        if: always()
+        if: ${{ always() && env.CRAWLER_DIR != '' }}
         shell: bash
         run: |
           cd "$CRAWLER_DIR"
-          node report-run.mjs run-summary.json
 
+          if [ -f report-run.mjs ]; then
+            node report-run.mjs run-summary.json
+          else
+            echo "Report module unavailable." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Step 14 - Save imported source IDs
       - name: Save imported source IDs
         if: always()
         uses: actions/cache/save@v4
@@ -330,9 +321,7 @@ jobs:
           path: .qazvinjobs-import-state/history.json
           key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # -----------------------------------------
-      # 9. ذخیره گزارش اجرا حتی در صورت موفقیت
-      # -----------------------------------------
+      # Step 15 - Upload run diagnostics
       - name: Upload crawl run report
         if: always()
         uses: actions/upload-artifact@v4
