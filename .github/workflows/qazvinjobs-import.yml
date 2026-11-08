@@ -1,4 +1,3 @@
-# Host clock and daily guard preserved; optional read-only detail audit.
 name: QazvinJobs Daily Import
 permissions:
   contents: read
@@ -72,18 +71,18 @@ jobs:
       QZIH_SOURCES: ${{ inputs.source || 'both' }}
       QZIH_DISCOVERY_ONLY: ${{ inputs.discovery_only && '1' || '0' }}
       QZIH_SEED_URLS: ${{ inputs.source_url || '' }}
-      QZIH_MAX_PAGES: '20'
-      QZIH_MAX_CANDIDATES: '500'
+      QZIH_MAX_PAGES: ${{ inputs.automatic_daily && '20' || '2' }}
+      QZIH_MAX_CANDIDATES: ${{ inputs.automatic_daily && '500' || '20' }}
       QZIH_MAX_ACCEPT: ${{ inputs.automatic_daily && '200' || inputs.max_accept || '200' }}
       QZIH_MAX_REVIEW: '5'
-      QZIH_RUN_LIMIT_MINUTES: '50'
+      QZIH_RUN_LIMIT_MINUTES: ${{ inputs.automatic_daily && '50' || '10' }}
       QZIH_MAX_AGE_DAYS: '1'
       QZIH_FRESHNESS_MODE: today_yesterday
       QZIH_IMPORT_HISTORY_FILE: ${{ github.workspace }}/.qazvinjobs-import-state/history.json
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.13-PUBLIC-SEARCH-AUDIT.zip
+      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.14-READY-DETAILS.zip
       QZIH_EESTEKHDAM_PREFER_NEWEST: '1'
       QZIH_DISCOVERY_PROBE_IDS: k6952h
     steps:
@@ -383,6 +382,8 @@ jobs:
         php -v
         find tests/php-importer -type f -name '*.php' -print0 | xargs -0 -n1 php -l
         php tests/php-importer/tests/importer-regressions.php
+
+        php tests/php-importer/tests/identity-regressions.php
       if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
     - name: Test parser before importing
       shell: bash
@@ -425,6 +426,7 @@ jobs:
 
         set -o pipefail
         npm run crawl 2>&1 | tee run.log
+      timeout-minutes: ${{ inputs.automatic_daily && 55 || 12 }}
     - name: Explain zero-import result in GitHub Summary
       if: ${{ always() && steps.daily_guard.outputs.should_run == 'true' && (env.CRAWLER_DIR != '') }}
       shell: bash
@@ -459,13 +461,15 @@ jobs:
             if isinstance(value, (bool, int, float)) or (isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,50}', value)):
                 result[key] = value
         result['limits'] = {k: v for k, v in data.get('limits', {}).items()
-                            if k in ('max_accept', 'max_age_days', 'freshness_mode', 'require_known_age', 'allow_contact_review')
+                                    if k in ('max_accept', 'max_age_days', 'freshness_mode', 'require_known_age', 'allow_contact_review', 'requested_max_pages', 'requested_max_candidates')
                             and (isinstance(v, (bool, int, float)) or v in ('rolling', 'today_yesterday'))}
         counters = ('discovered', 'urls_discovered', 'pages_scanned', 'inspected', 'accepted',
                     'too_old', 'unknown_age', 'previously_imported', 'duplicates', 'no_contact',
                     'no_location', 'errors', 'fresh_discovered', 'discovery_sort_verified',
                     'auth_loaded', 'identity_mismatch', 'duplicate_in_run', 'login_required',
-                    'search_http_status', 'public_read_posts_allowed', 'posts_blocked')
+                    'search_http_status', 'public_read_posts_allowed', 'posts_blocked',
+                    'detail_wait_retries', 'detail_wait_ms', 'detail_ready_without_date',
+                    'detail_load_failures', 'auth_required_skipped', 'non_job_category', 'contact_reveal_failed')
         result['sources'] = {}
         for name in ('e-estekhdam', 'divar'):
             row = data.get('sources', {}).get(name, {})
@@ -479,6 +483,29 @@ jobs:
         out.mkdir(exist_ok=True)
         (out / 'run-summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
         print('Saved counters-only run report.')
+
+        if isinstance(data.get('freshness_samples'), list):
+            import math
+            rows = []
+            for row in data['freshness_samples'][:16]:
+                source_name = row.get('source')
+                source_id = row.get('source_id', '')
+                if source_name not in ('e-estekhdam', 'divar') or not isinstance(source_id, str) or not re.fullmatch(r'(?:k[a-z0-9]+|divar-[a-z0-9_-]{5,})', source_id):
+                    continue
+                safe = {'source': source_name, 'source_id': source_id}
+                date = row.get('published_at', '')
+                if isinstance(date, str) and re.fullmatch(r'[0-9T:.Z+ /-]{0,60}', date):
+                    safe['published_at'] = date
+                for key in ('reason', 'readiness'):
+                    value = row.get(key)
+                    if value in ('old', 'unknown', 'recent', 'ready_with_date', 'ready_without_date'):
+                        safe[key] = value
+                for key in ('age_days', 'relative_age_days', 'wait_ms'):
+                    value = row.get(key)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                        safe[key] = value
+                rows.append(safe)
+            (out / 'freshness-samples.json').write_text(json.dumps({'samples': rows}, ensure_ascii=False, indent=2))
 
         # Only the read-only auditor writes these fields. Rebuild the downloadable
         # report from an explicit schema; never upload raw DOM, logs or contacts.
