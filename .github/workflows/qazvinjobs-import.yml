@@ -1,4 +1,3 @@
-
 name: QazvinJobs Daily Import
 
 # Daily schedule runs from the repository default branch.
@@ -55,7 +54,7 @@ concurrency:
 jobs:
   crawl:
     name: Crawl E-Estekhdam + Divar
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     env:
@@ -69,7 +68,7 @@ jobs:
       # شماره حساب متصل دیوار
       QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
 
-      # هر دو منبع
+      # منابع استخراج
       QZIH_SOURCES: ${{ inputs.source || 'both' }}
       QZIH_DISCOVERY_ONLY: ${{ inputs.discovery_only && '1' || '0' }}
       QZIH_SEED_URLS: ${{ inputs.source_url || '' }}
@@ -91,30 +90,25 @@ jobs:
 
       # فقط آگهی‌های امروز و دیروز که قبلاً وارد نشده‌اند
       QZIH_MAX_AGE_DAYS: '1'
-      # آگهی‌های امروز و دیروز به وقت ایران؛ نه صرفاً ۲۴ ساعت شناور
       QZIH_FRESHNESS_MODE: today_yesterday
       QZIH_IMPORT_HISTORY_FILE: ${{ github.workspace }}/.qazvinjobs-import-state/history.json
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
-      # اجرای روزانه نباید روی آگهیِ تستِ باقی‌مانده در وردپرس قفل شود
+
+      # اجرای روزانه نباید روی آگهی تست باقی‌مانده در وردپرس قفل شود
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      # Select the exact committed file; do not rename on upload.
+
+      # نام دقیق بسته موجود در مخزن
       QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.11-EESTEKHDAM-NEWEST.zip'
-      # Discovery-only diagnostics; these do not force import or bypass dates.
+
+      # تنظیمات بررسی جدیدترین‌های ای‌استخدام
       QZIH_EESTEKHDAM_PREFER_NEWEST: '1'
       QZIH_DISCOVERY_PROBE_IDS: 'k6952h'
 
     steps:
-
-      # -----------------------------------------
-      # 1. دریافت فایل‌های Repository
-      # -----------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -----------------------------------------
-      # 2. بازیابی سابقه شناسه‌ها و استخراج نسخه مشخص خزنده
-      # -----------------------------------------
       - name: Restore imported source IDs
         id: import_history
         uses: actions/cache/restore@v4
@@ -200,17 +194,11 @@ jobs:
 
           echo "CRAWLER_DIR=$CRAWLER_DIR" >> "$GITHUB_ENV"
 
-      # -----------------------------------------
-      # 3. Node.js
-      # -----------------------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # -----------------------------------------
-      # 4. نصب Dependency های Crawler
-      # -----------------------------------------
       - name: Install crawler dependencies
         shell: bash
         run: |
@@ -224,9 +212,6 @@ jobs:
             --no-audit \
             --no-fund
 
-      # -----------------------------------------
-      # 5. نصب Chromium مورد نیاز Playwright
-      # -----------------------------------------
       - name: Install Chromium for Playwright
         shell: bash
         run: |
@@ -236,9 +221,6 @@ jobs:
 
           npx playwright install --with-deps chromium
 
-      # -----------------------------------------
-      # 6. بررسی تنظیمات ضروری
-      # -----------------------------------------
       - name: Validate required settings
         shell: bash
         run: |
@@ -271,9 +253,6 @@ jobs:
             echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty."
           fi
 
-      # -----------------------------------------
-      # 7. نمایش نسخه Crawler
-      # -----------------------------------------
       - name: Show crawler version
         shell: bash
         run: |
@@ -288,7 +267,6 @@ jobs:
 
           node -p '"Crawler version: " + JSON.parse(require("fs").readFileSync("package.json", "utf8")).version'
 
-      # نسخه دقیق کد گیرنده همراه بسته است؛ تست‌ها روی سایت واقعی اجرا نمی‌شوند.
       - name: Test Import Hub company and SEO handling
         shell: bash
         run: |
@@ -305,11 +283,7 @@ jobs:
           cd "$CRAWLER_DIR"
           npm test
 
-      # -----------------------------------------
-      # 8. اجرای اصلی Crawler
-      # -----------------------------------------
-      # On-demand login: the OTP is entered into the existing WordPress Hub,
-      # never into GitHub logs or a GitHub input. No crawl runs during login.
+      # کد پیامکی فقط در وردپرس وارد می‌شود
       - name: Connect Divar account (manual OTP, no import)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.connect_divar && !inputs.validate_only }}
         shell: bash
@@ -336,7 +310,6 @@ jobs:
           npm run crawl 2>&1 | tee run.log
 
       - name: Explain zero-import result in GitHub Summary
-        # Do not run report-run.mjs if archive extraction never succeeded.
         if: ${{ always() && env.CRAWLER_DIR != '' }}
         shell: bash
         run: |
@@ -350,9 +323,6 @@ jobs:
           path: .qazvinjobs-import-state/history.json
           key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # -----------------------------------------
-      # 9. ذخیره گزارش اجرا حتی در صورت موفقیت
-      # -----------------------------------------
       - name: Upload crawl run report
         if: always()
         uses: actions/upload-artifact@v4
