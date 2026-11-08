@@ -1,4 +1,3 @@
-# GET-only connection diagnostic; existing receiver tests preserved.
 name: QazvinJobs Receiver Tests
 'on':
   workflow_dispatch:
