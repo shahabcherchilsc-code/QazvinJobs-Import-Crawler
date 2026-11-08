@@ -1,0 +1,200 @@
+name: QazvinJobs Receiver Tests
+'on':
+  workflow_dispatch:
+    inputs:
+      check_live_receiver:
+        description: فقط بعد از نصب نسخهٔ جدید؛ بررسی اتصال و قفل گیرنده بدون واردکردن آگهی
+        type: boolean
+        default: false
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: qazvinjobs-receiver-tests
+  cancel-in-progress: false
+jobs:
+  receiver-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: qj_test_only
+          MYSQL_DATABASE: qj_ci
+          MYSQL_USER: qj_ci
+          MYSQL_PASSWORD: qj_test_only
+        ports:
+        - 3306:3306
+        options: --health-cmd="mysqladmin ping -h localhost -pqj_test_only" --health-interval=10s --health-timeout=5s --health-retries=12
+    steps:
+    - uses: actions/checkout@v4
+    - name: Extract exact receiver candidate
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import zipfile
+        from pathlib import Path
+        package = Path('QazvinJobs-Import-Hub-0.3.59-IDENTITY-GUARD.zip')
+        with zipfile.ZipFile(package) as archive:
+            for info in archive.infolist():
+                path = Path(info.filename)
+                if path.is_absolute() or '..' in path.parts:
+                    raise RuntimeError('Invalid package path')
+            archive.extractall('.receiver-test')
+        PY
+    - name: PHP syntax and existing receiver regressions
+      shell: bash
+      run: |
+        set -euo pipefail
+        php -v
+        find .receiver-test/qazvinjobs-import-hub -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+        php .receiver-test/qazvinjobs-import-hub/tests/importer-regressions.php
+    - name: Source identity and repeat-import regressions
+      shell: bash
+      run: |
+        set -euo pipefail
+        php .receiver-test/qazvinjobs-import-hub/tests/identity-regressions.php
+    - name: Real database concurrency and nested locks
+      shell: bash
+      run: |
+        set -euo pipefail
+        php .receiver-test/qazvinjobs-import-hub/tests/mysql-locks.php
+    - name: Check installed receiver (GET only, no imports)
+      if: ${{ inputs.check_live_receiver }}
+      env:
+        QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
+        QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        """GET-only receiver readiness check; only allowlisted diagnostics leave memory."""
+        import json
+        import os
+        import re
+        import socket
+        import ssl
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        LIMIT = 65536
+        WP_CODES = {'rest_forbidden', 'rest_no_route', 'rest_cannot_access', 'rest_not_logged_in', 'rest_invalid_param', 'rest_cookie_invalid_nonce', 'internal_server_error'}
+
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, request, fp, code, msg, headers, newurl):
+                return None  # HTTPError is classified without forwarding the token.
+
+
+        def classify(status, headers, body):
+            content_type = str(headers.get('Content-Type', '')).split(';')[0].lower().strip()
+            kind = 'json' if content_type == 'application/json' or content_type.endswith('+json') else 'html' if content_type in ('text/html', 'application/xhtml+xml') else 'other'
+            result = {'http_status': status, 'response_type': kind, 'result': 'unverified', 'ready': False}
+            if len(body) > LIMIT:
+                result['result'] = 'response_too_large'
+                return result
+            try:
+                data = json.loads(body)
+            except (ValueError, UnicodeError):
+                data = None
+            if isinstance(data, dict):
+                result['response_type'] = 'json'
+                if data.get('code') in WP_CODES:
+                    result['wordpress_code'] = data['code']
+            if status in (401, 403):
+                result['result'] = 'authentication_denied' if isinstance(data, dict) and data.get('code') in WP_CODES else 'access_denied'
+            elif status == 404:
+                result['result'] = 'route_not_found'
+            elif status == 429:
+                result['result'] = 'rate_limited'
+            elif status >= 500:
+                result['result'] = 'server_error'
+            elif status != 200:
+                result['result'] = 'unexpected_http_status'
+            elif not isinstance(data, dict):
+                result['result'] = 'html_instead_of_json' if kind == 'html' else 'invalid_json_response'
+            else:
+                version = data.get('version')
+                if isinstance(version, str) and re.fullmatch(r'\d+(?:\.\d+){1,4}', version):
+                    result['receiver_version'] = version
+                result['guard_present'] = data.get('identity_guard') == 'page-lock-v1'
+                result['lock_ready'] = data.get('identity_lock_ready') is True
+                if data.get('ok') is not True:
+                    result['result'] = 'unexpected_json_response'
+                elif version != '0.3.59':
+                    result['result'] = 'receiver_version_mismatch'
+                elif not result['guard_present']:
+                    result['result'] = 'identity_guard_missing'
+                elif not result['lock_ready']:
+                    result['result'] = 'database_lock_not_ready'
+                else:
+                    result.update(result='verified', ready=True)
+            return result
+
+
+        def check(endpoint, token, open_request=None):
+            endpoint = str(endpoint or '').strip().rstrip('/')
+            token = str(token or '').strip()
+            parsed = urllib.parse.urlparse(endpoint)
+            if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.port
+                    or parsed.query or parsed.fragment or not parsed.path.endswith('/wp-json/qazvinjobs-import/v1/batch') or not token):
+                return {'result': 'configuration_incomplete', 'ready': False}
+            status_url = endpoint[:-6] + '/status'
+            request = urllib.request.Request(status_url, method='GET', headers={
+                'X-Qzih-Token': token,
+                'Authorization': 'Bearer ' + token,
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache',
+                'User-Agent': 'QazvinJobsImportCrawler/0.6.10',
+            })
+            opener = open_request or urllib.request.build_opener(NoRedirect).open
+            try:
+                with opener(request, timeout=20) as response:
+                    return classify(response.status, response.headers, response.read(LIMIT + 1))
+            except urllib.error.HTTPError as error:
+                if 300 <= error.code < 400:
+                    location = urllib.parse.urlparse(urllib.parse.urljoin(status_url, error.headers.get('Location', '')))
+                    result = {'result': 'redirect_refused', 'http_status': error.code, 'ready': False,
+                              'redirect_same_origin': (location.scheme, location.netloc) == (parsed.scheme, parsed.netloc)}
+                    error.close()
+                    return result
+                try:
+                    return classify(error.code, error.headers, error.read(LIMIT + 1))
+                finally:
+                    error.close()
+            except (TimeoutError, socket.timeout):
+                return {'result': 'connection_timeout', 'ready': False}
+            except urllib.error.URLError as error:
+                reason = error.reason
+                kind = 'tls_verification_failed' if isinstance(reason, ssl.SSLCertVerificationError) else 'dns_failed' if isinstance(reason, socket.gaierror) else 'connection_timeout' if isinstance(reason, TimeoutError) else 'connection_failed'
+                return {'result': kind, 'ready': False}
+            except Exception:
+                # Do not print raw exceptions: they can include endpoints or credentials.
+                return {'result': 'connection_or_response_failed', 'ready': False}
+
+
+        def main():
+            try:
+                result = check(os.environ.get('QZIH_IMPORT_ENDPOINT'), os.environ.get('QZIH_IMPORT_TOKEN'))
+            except Exception:
+                result = {'result': 'invalid_configuration', 'ready': False}
+            print('Receiver connection diagnostic (GET only; no import requested):')
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+            summary = os.environ.get('GITHUB_STEP_SUMMARY')
+            if summary:
+                with open(summary, 'a', encoding='utf-8') as file:
+                    file.write('## Receiver connection — no imports\n\n```json\n' + json.dumps(result, indent=2) + '\n```\n')
+            if not result['ready']:
+                print('::error title=Receiver connection::' + result['result'] + '; HTTP=' + str(result.get('http_status', 'not_received')) + '; no import requested.')
+                return 1
+            print('Receiver 0.3.59 and host database lock verified; no draft imported.')
+            return 0
+
+
+        if __name__ == '__main__':
+            raise SystemExit(main())
+
+        PY
