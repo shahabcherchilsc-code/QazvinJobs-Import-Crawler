@@ -49,6 +49,11 @@ permissions:
         required: false
         default: ''
         type: string
+      audit_only:
+        description: بررسی تاریخ و شناسه آگهی‌های منبع؛ بدون ساخت پیش‌نویس
+        required: false
+        default: false
+        type: boolean
 concurrency:
   group: qazvinjobs-daily-crawler
   cancel-in-progress: false
@@ -77,7 +82,7 @@ jobs:
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.11-EESTEKHDAM-NEWEST.zip
+      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.12-SOURCE-AUDIT.zip
       QZIH_EESTEKHDAM_PREFER_NEWEST: '1'
       QZIH_DISCOVERY_PROBE_IDS: k6952h
     steps:
@@ -135,6 +140,8 @@ jobs:
 
         def decide(event, env, get=github_get, now=None):
             inputs = event.get('inputs') or {}
+            if truth(inputs.get('audit_only')) and any(truth(inputs.get(k)) for k in ('validate_only', 'connect_divar', 'discovery_only')):
+                raise RuntimeError('Choose only one test mode for a source audit.')
             if not truth(inputs.get('automatic_daily')):
                 return {'allow': True, 'reason': 'manual', 'mode': 'manual'}
             now = (now or dt.datetime.now(IRAN)).astimezone(IRAN)
@@ -143,7 +150,7 @@ jobs:
             base = {'mode': mode, 'day': day}
             if day != now.date().isoformat():
                 return dict(base, allow=False, reason='stale_or_invalid_day')
-            if (truth(inputs.get('connect_divar')) or truth(inputs.get('discovery_only'))
+            if (truth(inputs.get('connect_divar')) or truth(inputs.get('discovery_only')) or truth(inputs.get('audit_only'))
                     or str(inputs.get('source_url') or '').strip()
                     or str(inputs.get('source') or 'both') != 'both'):
                 return dict(base, allow=False, reason='unexpected_automatic_inputs')
@@ -384,14 +391,25 @@ jobs:
         npm test
       if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
     - name: Connect Divar account (manual OTP, no import)
-      if: ${{ steps.daily_guard.outputs.should_run == 'true' && (github.event_name == 'workflow_dispatch' && inputs.connect_divar && !inputs.validate_only) }}
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' && inputs.connect_divar && !inputs.validate_only && !inputs.audit_only }}
       shell: bash
       run: |
         set -euo pipefail
         cd "$CRAWLER_DIR"
         node divar-auth.mjs
+    - name: Audit source details (no import)
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' && inputs.audit_only && !inputs.validate_only && !inputs.connect_divar && !inputs.discovery_only }}
+      timeout-minutes: 10
+      shell: bash
+      env:
+        QZIH_IMPORT_TOKEN: ''
+        QZIH_DIVAR_LOGIN_PHONE: ''
+      run: |
+        set -euo pipefail
+        cd "$CRAWLER_DIR"
+        node audit-sources.mjs
     - name: Run QazvinJobs crawler
-      if: ${{ steps.daily_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || (!inputs.validate_only && !inputs.connect_divar)) }}
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' && !inputs.validate_only && !inputs.connect_divar && !inputs.audit_only }}
       shell: bash
       run: |
         set -e
@@ -434,7 +452,7 @@ jobs:
             raise SystemExit(0)
         data = json.loads(source.read_text())
         result = {}
-        for key in ('crawler_version', 'source_mode', 'discovery_only', 'duration_seconds',
+        for key in ('crawler_version', 'source_mode', 'discovery_only', 'audit_only', 'duration_seconds',
                     'direct_accepted', 'review_queued', 'total_sent'):
             value = data.get(key)
             if isinstance(value, (bool, int, float)) or (isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,50}', value)):
@@ -460,13 +478,59 @@ jobs:
         (out / 'run-summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
         print('Saved counters-only run report.')
 
+        # Only the read-only auditor writes these fields. Rebuild the downloadable
+        # report from an explicit schema; never upload raw DOM, logs or contacts.
+        if data.get('audit_only') is True:
+            import urllib.parse
+            import math
+            def number(value):
+                return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+            def redact(value):
+                value = str(value or '').translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'))
+                value = re.sub(r'https?://\S+|[\w.+-]+@[\w.-]+\.[a-z]{2,}|@[\w.-]+', '[redacted]', value, flags=re.I)
+                value = re.sub(r'(?:\+?\d[\s().-]*){8,}', '[redacted]', value)
+                return re.sub(r'\s+', ' ', value).strip()[:180]
+            safe_rows = []
+            for row in data.get('records', [])[:8]:
+                name, sid = row.get('source'), row.get('source_id', '')
+                if name == 'e-estekhdam' and re.fullmatch(r'k[a-z0-9]+', sid):
+                    url = 'https://www.e-estekhdam.com/' + sid
+                elif name == 'divar' and re.fullmatch(r'divar-[a-z0-9_-]{5,}', sid):
+                    parsed = urllib.parse.urlparse(row.get('source_url', ''))
+                    if parsed.scheme != 'https' or parsed.netloc != 'divar.ir' or not re.fullmatch(r'/v/[A-Za-z0-9_-]{5,}', parsed.path):
+                        continue
+                    url = 'https://divar.ir' + parsed.path
+                else:
+                    continue
+                safe = {'source': name, 'source_id': sid, 'source_url': url}
+                for key in ('status', 'warning', 'relative_evidence_kind'):
+                    value = row.get(key)
+                    if isinstance(value, str) and re.fullmatch(r'[a-z_]{0,50}', value):
+                        safe[key] = value
+                value = row.get('published_at', '')
+                if isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}T[0-9:.]+Z|', value):
+                    safe['published_at'] = value
+                safe['relative_evidence'] = redact(row.get('relative_evidence', ''))
+                for key in ('page_id_acknowledged', 'detail_date_present'):
+                    if isinstance(row.get(key), bool):
+                        safe[key] = row[key]
+                for key in ('acknowledged_position_ids', 'card_age_days'):
+                    safe[key] = number(row.get(key))
+                verdict = row.get('decision', {})
+                if verdict.get('reason') in ('recent', 'old', 'unknown') and isinstance(verdict.get('allow'), bool):
+                    safe['decision'] = {'reason': verdict['reason'], 'allow': verdict['allow'],
+                                        'age_days': number(verdict.get('age_days')),
+                                        'day_difference': number(verdict.get('day_difference'))}
+                safe_rows.append(safe)
+            (out / 'audit-report.json').write_text(json.dumps({'audit_only': True, 'total_sent': 0, 'records': safe_rows}, ensure_ascii=False, indent=2))
+
         PY_QJ_REPORT
     - name: Upload crawl run report
       if: ${{ always() && steps.daily_guard.outputs.should_run == 'true' && (true) }}
       uses: actions/upload-artifact@v4
       with:
         name: qazvinjobs-crawler-diagnostics-${{ github.run_id }}
-        path: qazvinjobs-run-report/run-summary.json
+        path: qazvinjobs-run-report/*.json
         if-no-files-found: ignore
         retention-days: 7
 run-name: ${{ inputs.automatic_daily && format('QazvinJobs Daily Import [{0}] [{1}]', inputs.scheduled_day, inputs.validate_only && 'validation' || 'import') || github.workflow
