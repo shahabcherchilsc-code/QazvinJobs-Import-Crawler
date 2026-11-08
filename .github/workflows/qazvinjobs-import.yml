@@ -1,335 +1,473 @@
 name: QazvinJobs Daily Import
-
-# Daily schedule runs from the repository default branch.
 permissions:
   contents: read
-
-on:
+  actions: read
+'on':
   workflow_dispatch:
     inputs:
       validate_only:
-        description: 'فقط اجرای تست‌ها بدون انتقال آگهی (برای بررسی نسخه جدید)'
+        description: فقط اجرای تست‌ها بدون انتقال آگهی (برای بررسی نسخه جدید)
         required: false
         default: false
         type: boolean
       connect_divar:
-        description: 'اتصال مجدد حساب دیوار با کد پیامکی (فقط اجرای دستی و با واردکردن کد در وردپرس)'
+        description: اتصال مجدد حساب دیوار با کد پیامکی (فقط اجرای دستی و با واردکردن کد در وردپرس)
         required: false
         default: false
         type: boolean
       discovery_only:
-        description: 'Only discover current source links; never import any drafts'
+        description: Only discover current source links; never import any drafts
         required: false
         default: false
         type: boolean
       source:
-        description: 'Source selection for manual tests'
+        description: Source selection for manual tests
         required: false
-        default: 'both'
+        default: both
         type: choice
         options:
-          - both
-          - e-estekhdam
-          - divar
+        - both
+        - e-estekhdam
+        - divar
       source_url:
         description: 'اختیاری: لینک یک آگهی برای به‌روزرسانی همان پیش‌نویس؛ برای اجرای روزانه خالی بماند'
         required: false
         default: ''
         type: string
       max_accept:
-        description: 'حداکثر پیش‌نویس در اجرای دستی؛ اجرای اول ۱۰ مورد'
+        description: حداکثر پیش‌نویس در اجرای دستی؛ اجرای اول ۱۰ مورد
         required: true
         default: '10'
         type: string
-
-  schedule:
-    # اجرای اصلی روزانه - ساعت 09:17 به وقت ایران
-    - cron: '17 9 * * *'
-      timezone: 'Asia/Tehran'
-
+      automatic_daily:
+        description: درخواست روزانه از ساعت هاست؛ برای اجرای دستی معمول خاموش بماند
+        required: false
+        default: false
+        type: boolean
+      scheduled_day:
+        description: تاریخ ایران YYYY-MM-DD؛ فقط ساعت هاست آن را پر می‌کند
+        required: false
+        default: ''
+        type: string
 concurrency:
   group: qazvinjobs-daily-crawler
   cancel-in-progress: false
-
 jobs:
   crawl:
     name: Crawl E-Estekhdam + Divar
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-
     env:
       TZ: Asia/Tehran
-
-      # اتصال به سایت و Import Hub
       QZIH_SITE_URL: ${{ secrets.QZIH_SITE_URL }}
       QZIH_IMPORT_ENDPOINT: ${{ secrets.QZIH_IMPORT_ENDPOINT }}
       QZIH_IMPORT_TOKEN: ${{ secrets.QZIH_IMPORT_TOKEN }}
-
-      # شماره حساب متصل دیوار
       QZIH_DIVAR_LOGIN_PHONE: ${{ secrets.QZIH_DIVAR_LOGIN_PHONE }}
-
-      # منابع استخراج
       QZIH_SOURCES: ${{ inputs.source || 'both' }}
       QZIH_DISCOVERY_ONLY: ${{ inputs.discovery_only && '1' || '0' }}
       QZIH_SEED_URLS: ${{ inputs.source_url || '' }}
-
-      # تعداد صفحات قابل بررسی
       QZIH_MAX_PAGES: '20'
-
-      # حداکثر کاندیدهای قابل بررسی
       QZIH_MAX_CANDIDATES: '500'
-
-      # حداکثر آگهی قابل قبول در هر اجرا
-      QZIH_MAX_ACCEPT: ${{ inputs.max_accept || '200' }}
-
-      # موارد نیازمند بررسی دستی
+      QZIH_MAX_ACCEPT: ${{ inputs.automatic_daily && '200' || inputs.max_accept || '200' }}
       QZIH_MAX_REVIEW: '5'
-
-      # حداکثر زمان کار خود خزنده
       QZIH_RUN_LIMIT_MINUTES: '50'
-
-      # فقط آگهی‌های امروز و دیروز که قبلاً وارد نشده‌اند
       QZIH_MAX_AGE_DAYS: '1'
       QZIH_FRESHNESS_MODE: today_yesterday
       QZIH_IMPORT_HISTORY_FILE: ${{ github.workspace }}/.qazvinjobs-import-state/history.json
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
-
-      # اجرای روزانه نباید روی آگهی تست باقی‌مانده در وردپرس قفل شود
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-
-      # نام دقیق بسته موجود در مخزن
-      QZIH_CRAWLER_PACKAGE: 'QazvinJobs-Import-Crawler-0.6.11-EESTEKHDAM-NEWEST.zip'
-
-      # تنظیمات بررسی جدیدترین‌های ای‌استخدام
+      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.11-EESTEKHDAM-NEWEST.zip
       QZIH_EESTEKHDAM_PREFER_NEWEST: '1'
-      QZIH_DISCOVERY_PROBE_IDS: 'k6952h'
-
+      QZIH_DISCOVERY_PROBE_IDS: k6952h
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Daily execution guard
+      id: daily_guard
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        python3 - <<'PY_QJ_GUARD'
+        """Check actual prior job steps, including reruns, before a daily operation."""
+        import datetime as dt
+        import json
+        import os
+        import re
+        import urllib.parse
+        import urllib.request
+        from pathlib import Path
+        from zoneinfo import ZoneInfo
 
-      - name: Restore imported source IDs
-        id: import_history
-        uses: actions/cache/restore@v4
-        with:
-          path: .qazvinjobs-import-state/history.json
-          key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            qazvinjobs-import-history-v1-
-          fail-on-cache-miss: false
+        IRAN = ZoneInfo('Asia/Tehran')
+        JOB = 'Crawl E-Estekhdam + Divar'
+        MAIN_STEP = 'Run QazvinJobs crawler'
+        TEST_STEP = 'Test parser before importing'
 
-      - name: Extract crawler package
-        shell: bash
-        run: |
-          set -e
+        def truth(value):
+            return value is True or str(value).lower() == 'true'
 
-          echo "========================================"
-          echo "Looking for latest QazvinJobs Crawler..."
-          echo "========================================"
+        def github_get(path):
+            token = os.environ.get('GH_TOKEN', '')
+            if not token:
+                raise RuntimeError('GitHub Actions read token is missing; daily operation blocked.')
+            request = urllib.request.Request('https://api.github.com' + path, headers={
+                'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2026-03-10', 'User-Agent': 'QazvinJobs-Daily-Guard/1.0',
+            })
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    return json.load(response)
+            except Exception:
+                raise RuntimeError('GitHub history could not be verified; daily operation blocked.') from None
 
-          ZIP_FILE="$(
-            find . \
-              -maxdepth 3 \
-              -type f \
-              -name "$QZIH_CRAWLER_PACKAGE" \
-              -print |
-            sort -V |
-            tail -n 1
-          )"
+        def paged(get, path, key, maximum=3):
+            rows = []
+            separator = '&' if '?' in path else '?'
+            for page in range(1, maximum + 1):
+                data = get(path + separator + urllib.parse.urlencode({'per_page': 100, 'page': page}))
+                part = data.get(key)
+                if not isinstance(part, list):
+                    raise RuntimeError('Invalid GitHub history response; daily operation blocked.')
+                rows.extend(part)
+                if len(part) < 100:
+                    return rows
+            raise RuntimeError('GitHub history exceeded the verification limit; daily operation blocked.')
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No QazvinJobs Import Crawler ZIP found."
-            echo ""
-            echo "Repository files:"
-            find . -maxdepth 3 -type f | sort
-            exit 1
-          fi
+        def decide(event, env, get=github_get, now=None):
+            inputs = event.get('inputs') or {}
+            if not truth(inputs.get('automatic_daily')):
+                return {'allow': True, 'reason': 'manual', 'mode': 'manual'}
+            now = (now or dt.datetime.now(IRAN)).astimezone(IRAN)
+            day = str(inputs.get('scheduled_day') or '')
+            mode = 'validation' if truth(inputs.get('validate_only')) else 'import'
+            base = {'mode': mode, 'day': day}
+            if day != now.date().isoformat():
+                return dict(base, allow=False, reason='stale_or_invalid_day')
+            if (truth(inputs.get('connect_divar')) or truth(inputs.get('discovery_only'))
+                    or str(inputs.get('source_url') or '').strip()
+                    or str(inputs.get('source') or 'both') != 'both'):
+                return dict(base, allow=False, reason='unexpected_automatic_inputs')
+            repo = env.get('GITHUB_REPOSITORY', '')
+            if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+                raise RuntimeError('Invalid repository metadata; daily operation blocked.')
+            current_id = str(env.get('GITHUB_RUN_ID', ''))
+            title = f'QazvinJobs Daily Import [{day}] [{mode}]'
+            midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(dt.timezone.utc)
+            query = urllib.parse.urlencode({'event': 'workflow_dispatch', 'branch': 'main',
+                                          'created': '>=' + midnight.isoformat().replace('+00:00', 'Z')})
+            root = '/repos/' + repo + '/actions'
+            runs = paged(get, root + '/workflows/qazvinjobs-import.yml/runs?' + query, 'workflow_runs')
+            failures = 0
+            for run in runs:
+                if run.get('display_title') != title:
+                    continue
+                run_id = str(run.get('id', ''))
+                if not run_id.isdigit():
+                    raise RuntimeError('Invalid run identity; daily operation blocked.')
+                # filter=all is essential: a skipped rerun must not hide a prior success.
+                jobs = paged(get, root + '/runs/' + run_id + '/jobs?filter=all', 'jobs', maximum=2)
+                for job in jobs:
+                    if job.get('name') != JOB:
+                        continue
+                    complete = job.get('status') == 'completed'
+                    if run_id == current_id and not complete:
+                        continue  # Our own running guard; previous completed attempts still count.
+                    steps = {s.get('name'): s.get('conclusion') for s in job.get('steps', [])}
+                    expected_step = TEST_STEP if mode == 'validation' else MAIN_STEP
+                    if complete and steps.get(expected_step) == 'success':
+                        return dict(base, allow=False, reason='already_completed', prior_run=run.get('html_url', ''))
+                    if job.get('status') == 'in_progress':
+                        return dict(base, allow=False, reason='already_running', prior_run=run.get('html_url', ''))
+                    if (complete and job.get('conclusion') in ('failure', 'timed_out', 'cancelled')
+                            and steps.get('Daily execution guard') == 'success'):
+                        failures += 1
+            if failures >= 2:
+                return dict(base, allow=False, reason='daily_attempt_limit', failures=failures)
+            return dict(base, allow=True, reason='daily_attempt_allowed', attempt=failures + 1)
 
-          echo "Selected crawler package:"
-          echo "$ZIP_FILE"
+        def main():
+            event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+            decision = decide(event, os.environ)
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                output.write('should_run=' + ('true' if decision['allow'] else 'false') + '\n')
+            now = dt.datetime.now(IRAN)
+            lines = ['## Daily execution guard', '', f"Decision: {decision['reason']}",
+                     f"Mode: {decision['mode']}", 'Iran runner clock: ' + now.isoformat(),
+                     'Workflow revision: ' + os.environ.get('GITHUB_SHA', '')]
+            if decision.get('prior_run'):
+                lines.append('Prior run: ' + decision['prior_run'])
+            summary = '\n'.join(lines) + '\n'
+            print(summary)
+            if os.environ.get('GITHUB_STEP_SUMMARY'):
+                with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as target:
+                    target.write(summary)
 
-          RUNTIME_DIR="$GITHUB_WORKSPACE/.crawler-runtime"
+        if __name__ == '__main__':
+            main()
 
-          rm -rf "$RUNTIME_DIR"
-          mkdir -p "$RUNTIME_DIR"
+        PY_QJ_GUARD
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Restore imported source IDs
+      id: import_history
+      uses: actions/cache/restore@v4
+      with:
+        path: .qazvinjobs-import-state/history.json
+        key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          qazvinjobs-import-history-v1-
+        fail-on-cache-miss: false
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Extract crawler package
+      shell: bash
+      run: |
+        set -e
 
-          unzip -q "$ZIP_FILE" -d "$RUNTIME_DIR"
+        echo "========================================"
+        echo "Looking for latest QazvinJobs Crawler..."
+        echo "========================================"
 
+        ZIP_FILE="$(
+          find . \
+            -maxdepth 3 \
+            -type f \
+            -name "$QZIH_CRAWLER_PACKAGE" \
+            -print |
+          sort -V |
+          tail -n 1
+        )"
+
+        if [ -z "$ZIP_FILE" ]; then
+          echo "ERROR: No QazvinJobs Import Crawler ZIP found."
           echo ""
-          echo "Extracted files:"
-          find "$RUNTIME_DIR" -maxdepth 5 -type f | sort
+          echo "Repository files:"
+          find . -maxdepth 3 -type f | sort
+          exit 1
+        fi
 
+        echo "Selected crawler package:"
+        echo "$ZIP_FILE"
+
+        RUNTIME_DIR="$GITHUB_WORKSPACE/.crawler-runtime"
+
+        rm -rf "$RUNTIME_DIR"
+        mkdir -p "$RUNTIME_DIR"
+
+        unzip -q "$ZIP_FILE" -d "$RUNTIME_DIR"
+
+        echo ""
+        echo "Extracted files:"
+        find "$RUNTIME_DIR" -maxdepth 5 -type f | sort
+
+        echo ""
+        echo "Looking for crawler.mjs..."
+
+        CRAWLER_FILE="$(
+          find "$RUNTIME_DIR" \
+            -maxdepth 6 \
+            -type f \
+            -name 'crawler.mjs' |
+          head -n 1
+        )"
+
+        if [ -z "$CRAWLER_FILE" ]; then
+          echo "ERROR: crawler.mjs was not found after extracting ZIP."
+          exit 1
+        fi
+
+        CRAWLER_DIR="$(dirname "$CRAWLER_FILE")"
+
+        if [ ! -f "$CRAWLER_DIR/package.json" ]; then
+          echo "ERROR: package.json was not found beside crawler.mjs."
           echo ""
-          echo "Looking for crawler.mjs..."
-
-          CRAWLER_FILE="$(
-            find "$RUNTIME_DIR" \
-              -maxdepth 6 \
-              -type f \
-              -name 'crawler.mjs' |
-            head -n 1
-          )"
-
-          if [ -z "$CRAWLER_FILE" ]; then
-            echo "ERROR: crawler.mjs was not found after extracting ZIP."
-            exit 1
-          fi
-
-          CRAWLER_DIR="$(dirname "$CRAWLER_FILE")"
-
-          if [ ! -f "$CRAWLER_DIR/package.json" ]; then
-            echo "ERROR: package.json was not found beside crawler.mjs."
-            echo ""
-            echo "Crawler directory:"
-            echo "$CRAWLER_DIR"
-            echo ""
-            ls -la "$CRAWLER_DIR"
-            exit 1
-          fi
-
-          echo ""
-          echo "Crawler directory detected:"
+          echo "Crawler directory:"
           echo "$CRAWLER_DIR"
+          echo ""
+          ls -la "$CRAWLER_DIR"
+          exit 1
+        fi
 
-          echo "CRAWLER_DIR=$CRAWLER_DIR" >> "$GITHUB_ENV"
+        echo ""
+        echo "Crawler directory detected:"
+        echo "$CRAWLER_DIR"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+        echo "CRAWLER_DIR=$CRAWLER_DIR" >> "$GITHUB_ENV"
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Install crawler dependencies
+      shell: bash
+      run: |
+        set -e
 
-      - name: Install crawler dependencies
-        shell: bash
-        run: |
-          set -e
+        cd "$CRAWLER_DIR"
 
-          cd "$CRAWLER_DIR"
+        echo "Installing crawler dependencies..."
 
-          echo "Installing crawler dependencies..."
+        npm install \
+          --no-audit \
+          --no-fund
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Install Chromium for Playwright
+      shell: bash
+      run: |
+        set -e
 
-          npm install \
-            --no-audit \
-            --no-fund
+        cd "$CRAWLER_DIR"
 
-      - name: Install Chromium for Playwright
-        shell: bash
-        run: |
-          set -e
+        npx playwright install --with-deps chromium
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Validate required settings
+      shell: bash
+      run: |
+        set -e
 
-          cd "$CRAWLER_DIR"
+        echo "Checking Import Hub configuration..."
 
-          npx playwright install --with-deps chromium
+        if [ -z "$QZIH_IMPORT_ENDPOINT" ]; then
+          echo "ERROR: QZIH_IMPORT_ENDPOINT is missing."
+          exit 1
+        fi
 
-      - name: Validate required settings
-        shell: bash
-        run: |
-          set -e
+        if [ -z "$QZIH_IMPORT_TOKEN" ]; then
+          echo "ERROR: QZIH_IMPORT_TOKEN is missing."
+          exit 1
+        fi
 
-          echo "Checking Import Hub configuration..."
+        if [ -z "$QZIH_SITE_URL" ]; then
+          echo "WARNING: QZIH_SITE_URL is empty."
+        else
+          echo "Site URL: configured"
+        fi
 
-          if [ -z "$QZIH_IMPORT_ENDPOINT" ]; then
-            echo "ERROR: QZIH_IMPORT_ENDPOINT is missing."
-            exit 1
-          fi
+        echo "Import endpoint: configured"
+        echo "Import token: configured"
 
-          if [ -z "$QZIH_IMPORT_TOKEN" ]; then
-            echo "ERROR: QZIH_IMPORT_TOKEN is missing."
-            exit 1
-          fi
+        if [ -n "$QZIH_DIVAR_LOGIN_PHONE" ]; then
+          echo "Divar login phone: configured"
+        else
+          echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty."
+        fi
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Show crawler version
+      shell: bash
+      run: |
+        set -e
 
-          if [ -z "$QZIH_SITE_URL" ]; then
-            echo "WARNING: QZIH_SITE_URL is empty."
-          else
-            echo "Site URL: configured"
-          fi
+        cd "$CRAWLER_DIR"
 
-          echo "Import endpoint: configured"
-          echo "Import token: configured"
+        echo "========================================"
+        echo "Crawler package selected:"
+        echo "$CRAWLER_DIR"
+        echo "========================================"
 
-          if [ -n "$QZIH_DIVAR_LOGIN_PHONE" ]; then
-            echo "Divar login phone: configured"
-          else
-            echo "WARNING: QZIH_DIVAR_LOGIN_PHONE is empty."
-          fi
+        node -p '"Crawler version: " + JSON.parse(require("fs").readFileSync("package.json", "utf8")).version'
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Test Import Hub company and SEO handling
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$CRAWLER_DIR"
+        php -v
+        find tests/php-importer -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+        php tests/php-importer/tests/importer-regressions.php
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Test parser before importing
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$CRAWLER_DIR"
+        npm test
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
+    - name: Connect Divar account (manual OTP, no import)
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' && (github.event_name == 'workflow_dispatch' && inputs.connect_divar && !inputs.validate_only) }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$CRAWLER_DIR"
+        node divar-auth.mjs
+    - name: Run QazvinJobs crawler
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' && (github.event_name != 'workflow_dispatch' || (!inputs.validate_only && !inputs.connect_divar)) }}
+      shell: bash
+      run: |
+        set -e
 
-      - name: Show crawler version
-        shell: bash
-        run: |
-          set -e
+        cd "$CRAWLER_DIR"
 
-          cd "$CRAWLER_DIR"
+        echo "========================================"
+        echo "Starting QazvinJobs crawler"
+        echo "Sources: E-Estekhdam + Divar"
+        echo "Freshness: $QZIH_FRESHNESS_MODE (Iran timezone); direct contact required"
+        echo "========================================"
 
-          echo "========================================"
-          echo "Crawler package selected:"
-          echo "$CRAWLER_DIR"
-          echo "========================================"
+        set -o pipefail
+        npm run crawl 2>&1 | tee run.log
+    - name: Explain zero-import result in GitHub Summary
+      if: ${{ always() && steps.daily_guard.outputs.should_run == 'true' && (env.CRAWLER_DIR != '') }}
+      shell: bash
+      run: |
+        cd "$CRAWLER_DIR"
+        node report-run.mjs run-summary.json
+    - name: Save imported source IDs
+      if: ${{ always() && steps.daily_guard.outputs.should_run == 'true' && (true) }}
+      uses: actions/cache/save@v4
+      with:
+        path: .qazvinjobs-import-state/history.json
+        key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Prepare counters-only crawl report
+      if: ${{ always() && steps.daily_guard.outputs.should_run == 'true' && env.CRAWLER_DIR != '' }}
+      shell: bash
+      run: |
+        python3 - "$CRAWLER_DIR/run-summary.json" <<'PY_QJ_REPORT'
+        """Export counters only; never upload raw pages, contacts, endpoints or logs."""
+        import json
+        import re
+        import sys
+        from pathlib import Path
+        source = Path(sys.argv[1])
+        if not source.is_file():
+            print('No crawl report for this validation or skipped run.')
+            raise SystemExit(0)
+        data = json.loads(source.read_text())
+        result = {}
+        for key in ('crawler_version', 'source_mode', 'discovery_only', 'duration_seconds',
+                    'direct_accepted', 'review_queued', 'total_sent'):
+            value = data.get(key)
+            if isinstance(value, (bool, int, float)) or (isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,50}', value)):
+                result[key] = value
+        result['limits'] = {k: v for k, v in data.get('limits', {}).items()
+                            if k in ('max_accept', 'max_age_days', 'freshness_mode', 'require_known_age', 'allow_contact_review')
+                            and (isinstance(v, (bool, int, float)) or v in ('rolling', 'today_yesterday'))}
+        counters = ('discovered', 'urls_discovered', 'pages_scanned', 'inspected', 'accepted',
+                    'too_old', 'unknown_age', 'previously_imported', 'duplicates', 'no_contact',
+                    'no_location', 'errors', 'fresh_discovered', 'discovery_sort_verified',
+                    'auth_loaded', 'identity_mismatch', 'duplicate_in_run', 'login_required')
+        result['sources'] = {}
+        for name in ('e-estekhdam', 'divar'):
+            row = data.get('sources', {}).get(name, {})
+            safe = {key: row[key] for key in counters if isinstance(row.get(key), (bool, int, float))}
+            for key in ('discovery_sort_status', 'auth_status'):
+                value = row.get(key)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z_]{1,80}', value):
+                    safe[key] = value
+            result['sources'][name] = safe
+        out = Path('qazvinjobs-run-report')
+        out.mkdir(exist_ok=True)
+        (out / 'run-summary.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        print('Saved counters-only run report.')
 
-          node -p '"Crawler version: " + JSON.parse(require("fs").readFileSync("package.json", "utf8")).version'
-
-      - name: Test Import Hub company and SEO handling
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$CRAWLER_DIR"
-          php -v
-          find tests/php-importer -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-          php tests/php-importer/tests/importer-regressions.php
-
-      - name: Test parser before importing
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$CRAWLER_DIR"
-          npm test
-
-      # کد پیامکی فقط در وردپرس وارد می‌شود
-      - name: Connect Divar account (manual OTP, no import)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.connect_divar && !inputs.validate_only }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$CRAWLER_DIR"
-          node divar-auth.mjs
-
-      - name: Run QazvinJobs crawler
-        if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.validate_only && !inputs.connect_divar) }}
-        shell: bash
-        run: |
-          set -e
-
-          cd "$CRAWLER_DIR"
-
-          echo "========================================"
-          echo "Starting QazvinJobs crawler"
-          echo "Sources: E-Estekhdam + Divar"
-          echo "Freshness: $QZIH_FRESHNESS_MODE (Iran timezone); direct contact required"
-          echo "========================================"
-
-          set -o pipefail
-          npm run crawl 2>&1 | tee run.log
-
-      - name: Explain zero-import result in GitHub Summary
-        if: ${{ always() && env.CRAWLER_DIR != '' }}
-        shell: bash
-        run: |
-          cd "$CRAWLER_DIR"
-          node report-run.mjs run-summary.json
-
-      - name: Save imported source IDs
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .qazvinjobs-import-state/history.json
-          key: qazvinjobs-import-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Upload crawl run report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: qazvinjobs-crawler-diagnostics-${{ github.run_id }}
-          path: |
-            .crawler-runtime/**/run.log
-            .crawler-runtime/**/run-summary.json
-          if-no-files-found: ignore
-          retention-days: 7
+        PY_QJ_REPORT
+    - name: Upload crawl run report
+      if: ${{ always() && steps.daily_guard.outputs.should_run == 'true' && (true) }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: qazvinjobs-crawler-diagnostics-${{ github.run_id }}
+        path: qazvinjobs-run-report/run-summary.json
+        if-no-files-found: ignore
+        retention-days: 7
+run-name: ${{ inputs.automatic_daily && format('QazvinJobs Daily Import [{0}] [{1}]', inputs.scheduled_day, inputs.validate_only && 'validation' || 'import') || github.workflow
+  }}
