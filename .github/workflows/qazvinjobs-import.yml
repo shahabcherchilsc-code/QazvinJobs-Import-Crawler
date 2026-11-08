@@ -82,7 +82,7 @@ jobs:
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.12-SOURCE-AUDIT.zip
+      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.13-PUBLIC-SEARCH-AUDIT.zip
       QZIH_EESTEKHDAM_PREFER_NEWEST: '1'
       QZIH_DISCOVERY_PROBE_IDS: k6952h
     steps:
@@ -463,12 +463,13 @@ jobs:
         counters = ('discovered', 'urls_discovered', 'pages_scanned', 'inspected', 'accepted',
                     'too_old', 'unknown_age', 'previously_imported', 'duplicates', 'no_contact',
                     'no_location', 'errors', 'fresh_discovered', 'discovery_sort_verified',
-                    'auth_loaded', 'identity_mismatch', 'duplicate_in_run', 'login_required')
+                    'auth_loaded', 'identity_mismatch', 'duplicate_in_run', 'login_required',
+                    'search_http_status', 'public_read_posts_allowed', 'posts_blocked')
         result['sources'] = {}
         for name in ('e-estekhdam', 'divar'):
             row = data.get('sources', {}).get(name, {})
             safe = {key: row[key] for key in counters if isinstance(row.get(key), (bool, int, float))}
-            for key in ('discovery_sort_status', 'auth_status'):
+            for key in ('discovery_sort_status', 'auth_status', 'search_stage', 'search_status', 'search_error'):
                 value = row.get(key)
                 if isinstance(value, str) and re.fullmatch(r'[A-Za-z_]{1,80}', value):
                     safe[key] = value
