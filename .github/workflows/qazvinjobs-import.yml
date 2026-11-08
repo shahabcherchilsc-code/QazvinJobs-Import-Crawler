@@ -82,7 +82,7 @@ jobs:
       QZIH_REQUIRE_KNOWN_AGE: '1'
       QZIH_ALLOW_CONTACT_REVIEW: '0'
       QZIH_ENABLE_CONTROLLED_TEST: '0'
-      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.14-READY-DETAILS.zip
+      QZIH_CRAWLER_PACKAGE: QazvinJobs-Import-Crawler-0.6.15-LISTING-BADGE.zip
       QZIH_EESTEKHDAM_PREFER_NEWEST: '1'
       QZIH_DISCOVERY_PROBE_IDS: k6952h
     steps:
@@ -384,6 +384,8 @@ jobs:
         php tests/php-importer/tests/importer-regressions.php
 
         php tests/php-importer/tests/identity-regressions.php
+
+        php tests/php-importer/tests/eestekhdam-policy-regressions.php
       if: ${{ steps.daily_guard.outputs.should_run == 'true' }}
     - name: Test parser before importing
       shell: bash
@@ -410,6 +412,142 @@ jobs:
         set -euo pipefail
         cd "$CRAWLER_DIR"
         node audit-sources.mjs
+    - name: Check installed receiver policy (GET only)
+      if: ${{ steps.daily_guard.outputs.should_run == 'true' && !inputs.validate_only && !inputs.connect_divar && !inputs.audit_only && !inputs.discovery_only }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        """GET-only receiver readiness check; only allowlisted diagnostics leave memory."""
+        import json
+        import os
+        import re
+        import socket
+        import ssl
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        LIMIT = 65536
+        WP_CODES = {'rest_forbidden', 'rest_no_route', 'rest_cannot_access', 'rest_not_logged_in', 'rest_invalid_param', 'rest_cookie_invalid_nonce', 'internal_server_error'}
+
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, request, fp, code, msg, headers, newurl):
+                return None  # HTTPError is classified without forwarding the token.
+
+
+        def classify(status, headers, body):
+            content_type = str(headers.get('Content-Type', '')).split(';')[0].lower().strip()
+            kind = 'json' if content_type == 'application/json' or content_type.endswith('+json') else 'html' if content_type in ('text/html', 'application/xhtml+xml') else 'other'
+            result = {'http_status': status, 'response_type': kind, 'result': 'unverified', 'ready': False}
+            if len(body) > LIMIT:
+                result['result'] = 'response_too_large'
+                return result
+            try:
+                data = json.loads(body)
+            except (ValueError, UnicodeError):
+                data = None
+            if isinstance(data, dict):
+                result['response_type'] = 'json'
+                if data.get('code') in WP_CODES:
+                    result['wordpress_code'] = data['code']
+            if status in (401, 403):
+                result['result'] = 'authentication_denied' if isinstance(data, dict) and data.get('code') in WP_CODES else 'access_denied'
+            elif status == 404:
+                result['result'] = 'route_not_found'
+            elif status == 429:
+                result['result'] = 'rate_limited'
+            elif status >= 500:
+                result['result'] = 'server_error'
+            elif status != 200:
+                result['result'] = 'unexpected_http_status'
+            elif not isinstance(data, dict):
+                result['result'] = 'html_instead_of_json' if kind == 'html' else 'invalid_json_response'
+            else:
+                version = data.get('version')
+                if isinstance(version, str) and re.fullmatch(r'\d+(?:\.\d+){1,4}', version):
+                    result['receiver_version'] = version
+                result['guard_present'] = data.get('identity_guard') == 'page-lock-v1'
+                result['lock_ready'] = data.get('identity_lock_ready') is True
+                if data.get('ok') is not True:
+                    result['result'] = 'unexpected_json_response'
+                elif version != '0.3.60':
+                    result['result'] = 'receiver_version_mismatch'
+                elif not result['guard_present']:
+                    result['result'] = 'identity_guard_missing'
+                elif not result['lock_ready']:
+                    result['result'] = 'database_lock_not_ready'
+                elif data.get('eestekhdam_application_policy') != 'listing-card-v1':
+                    result['result'] = 'application_policy_missing'
+                else:
+                    result.update(result='verified', ready=True)
+            return result
+
+
+        def check(endpoint, token, open_request=None):
+            endpoint = str(endpoint or '').strip().rstrip('/')
+            token = str(token or '').strip()
+            parsed = urllib.parse.urlparse(endpoint)
+            if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.port
+                    or parsed.query or parsed.fragment or not parsed.path.endswith('/wp-json/qazvinjobs-import/v1/batch') or not token):
+                return {'result': 'configuration_incomplete', 'ready': False}
+            status_url = endpoint[:-6] + '/status'
+            request = urllib.request.Request(status_url, method='GET', headers={
+                'X-Qzih-Token': token,
+                'Authorization': 'Bearer ' + token,
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache',
+                'User-Agent': 'QazvinJobsImportCrawler/0.6.10',
+            })
+            opener = open_request or urllib.request.build_opener(NoRedirect).open
+            try:
+                with opener(request, timeout=20) as response:
+                    return classify(response.status, response.headers, response.read(LIMIT + 1))
+            except urllib.error.HTTPError as error:
+                if 300 <= error.code < 400:
+                    location = urllib.parse.urlparse(urllib.parse.urljoin(status_url, error.headers.get('Location', '')))
+                    result = {'result': 'redirect_refused', 'http_status': error.code, 'ready': False,
+                              'redirect_same_origin': (location.scheme, location.netloc) == (parsed.scheme, parsed.netloc)}
+                    error.close()
+                    return result
+                try:
+                    return classify(error.code, error.headers, error.read(LIMIT + 1))
+                finally:
+                    error.close()
+            except (TimeoutError, socket.timeout):
+                return {'result': 'connection_timeout', 'ready': False}
+            except urllib.error.URLError as error:
+                reason = error.reason
+                kind = 'tls_verification_failed' if isinstance(reason, ssl.SSLCertVerificationError) else 'dns_failed' if isinstance(reason, socket.gaierror) else 'connection_timeout' if isinstance(reason, TimeoutError) else 'connection_failed'
+                return {'result': kind, 'ready': False}
+            except Exception:
+                # Do not print raw exceptions: they can include endpoints or credentials.
+                return {'result': 'connection_or_response_failed', 'ready': False}
+
+
+        def main():
+            try:
+                result = check(os.environ.get('QZIH_IMPORT_ENDPOINT'), os.environ.get('QZIH_IMPORT_TOKEN'))
+            except Exception:
+                result = {'result': 'invalid_configuration', 'ready': False}
+            print('Receiver connection diagnostic (GET only; no import requested):')
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+            summary = os.environ.get('GITHUB_STEP_SUMMARY')
+            if summary:
+                with open(summary, 'a', encoding='utf-8') as file:
+                    file.write('## Receiver connection — no imports\n\n```json\n' + json.dumps(result, indent=2) + '\n```\n')
+            if not result['ready']:
+                print('::error title=Receiver connection::' + result['result'] + '; HTTP=' + str(result.get('http_status', 'not_received')) + '; no import requested.')
+                return 1
+            print('Receiver 0.3.60 and host database lock verified; no draft imported.')
+            return 0
+
+
+        if __name__ == '__main__':
+            raise SystemExit(main())
+
+        PY
     - name: Run QazvinJobs crawler
       if: ${{ steps.daily_guard.outputs.should_run == 'true' && !inputs.validate_only && !inputs.connect_divar && !inputs.audit_only }}
       shell: bash
@@ -456,7 +594,7 @@ jobs:
         data = json.loads(source.read_text())
         result = {}
         for key in ('crawler_version', 'source_mode', 'discovery_only', 'audit_only', 'duration_seconds',
-                    'direct_accepted', 'review_queued', 'total_sent'):
+                    'direct_accepted', 'review_queued', 'contact_review_accepted', 'total_sent'):
             value = data.get(key)
             if isinstance(value, (bool, int, float)) or (isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,50}', value)):
                 result[key] = value
@@ -469,7 +607,7 @@ jobs:
                     'auth_loaded', 'identity_mismatch', 'duplicate_in_run', 'login_required',
                     'search_http_status', 'public_read_posts_allowed', 'posts_blocked',
                     'detail_wait_retries', 'detail_wait_ms', 'detail_ready_without_date',
-                    'detail_load_failures', 'auth_required_skipped', 'non_job_category', 'contact_reveal_failed')
+                    'detail_load_failures', 'easy_apply_skipped', 'application_unknown', 'contact_review_drafts', 'auth_required_skipped', 'non_job_category', 'contact_reveal_failed')
         result['sources'] = {}
         for name in ('e-estekhdam', 'divar'):
             row = data.get('sources', {}).get(name, {})
@@ -552,6 +690,31 @@ jobs:
                                         'day_difference': number(verdict.get('day_difference'))}
                 safe_rows.append(safe)
             (out / 'audit-report.json').write_text(json.dumps({'audit_only': True, 'total_sent': 0, 'records': safe_rows}, ensure_ascii=False, indent=2))
+
+        # Only bounded public IDs, flags and fixed reason codes; no contact values.
+        trace = {}
+        for key in ('application_samples', 'contact_samples'):
+            rows = []
+            for row in data.get(key, [])[:24]:
+                sid = row.get('source_id', '')
+                if not isinstance(sid, str) or not re.fullmatch(r'(?:k[a-z0-9]+|divar-[a-z0-9_-]{5,})', sid):
+                    continue
+                safe = {'source_id': sid}
+                for name in ('source', 'state', 'application_state', 'detection_reason'):
+                    value = row.get(name)
+                    allowed = {'source': ('e-estekhdam', 'divar'), 'state': ('easy_apply', 'eligible', 'unknown'), 'application_state': ('easy_apply', 'eligible', 'unknown', 'not_applicable'), 'detection_reason': ('no_visible_numbered_contact_block', 'visible_numbered_contact_block', 'contact_block_without_number', 'reveal_clicked_but_no_number', 'revealed_numbered_contact_block', 'not_reported')}
+                    if value in allowed[name]:
+                        safe[name] = value
+                for name in ('card_complete', 'easy_apply', 'direct_contact', 'review_required', 'clicked', 'contact_available'):
+                    if isinstance(row.get(name), bool):
+                        safe[name] = row[name]
+                value = row.get('network_responses')
+                if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 1000:
+                    safe['network_responses'] = value
+                rows.append(safe)
+            trace[key] = rows
+        if any(trace.values()):
+            (out / 'application-contact-samples.json').write_text(json.dumps(trace, ensure_ascii=False, indent=2))
 
         PY_QJ_REPORT
     - name: Upload crawl run report
