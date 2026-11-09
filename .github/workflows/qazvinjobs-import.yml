@@ -472,7 +472,7 @@ jobs:
                 result['lock_ready'] = data.get('identity_lock_ready') is True
                 if data.get('ok') is not True:
                     result['result'] = 'unexpected_json_response'
-                elif version != '0.3.60':
+                elif version != '0.3.61':
                     result['result'] = 'receiver_version_mismatch'
                 elif not result['guard_present']:
                     result['result'] = 'identity_guard_missing'
@@ -540,7 +540,7 @@ jobs:
             if not result['ready']:
                 print('::error title=Receiver connection::' + result['result'] + '; HTTP=' + str(result.get('http_status', 'not_received')) + '; no import requested.')
                 return 1
-            print('Receiver 0.3.60 and host database lock verified; no draft imported.')
+            print('Receiver 0.3.61 and host database lock verified; no draft imported.')
             return 0
 
 
